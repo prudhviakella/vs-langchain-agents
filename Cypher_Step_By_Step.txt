@@ -1,0 +1,2250 @@
+//================================================================================
+// CYPHER FROM SCRATCH — A STEP-BY-STEP QUERY BOOK
+// Neo4j Browser edition. No Python required.
+//================================================================================
+
+// Dataset : e-commerce (customers, orders, products, categories, reviews)
+// Audience: complete beginners to Neo4j and Cypher
+// Format  : run the numbered queries in order, top to bottom
+
+// SECTION 0  Before you begin
+// SECTION 1  Your very first node
+// SECTION 2  A second node, and connecting the two
+// SECTION 3  Building a small graph
+// SECTION 4  Filtering with WHERE
+// SECTION 5  Retrieving and traversing
+// SECTION 6  Aggregation
+
+//--------------------------------------------------------------------------------
+// HOW TO USE THIS FILE
+//--------------------------------------------------------------------------------
+
+// 1. Open your Neo4j Aura instance and click "Open with Neo4j Browser".
+// 2. Copy ONE numbered query at a time into the command bar at the top.
+// 3. Press Ctrl+Enter (Cmd+Enter on Mac) to run it.
+// 4. Read the "-->" note under each query BEFORE you run it, then check that
+//    what you got matches what it says.
+
+// Lines starting with // are comments. Cypher ignores them, so it is safe to
+// copy them along with the query.
+
+// IMPORTANT: paste one query at a time, not the whole file. Neo4j Browser runs
+// one statement per execution. Queries separated by a blank line in this file
+// are separate statements.
+
+//--------------------------------------------------------------------------------
+// A NOTE ON THE DATA
+//--------------------------------------------------------------------------------
+
+// This data is generated, not real. You will notice odd combinations — a product
+// called "Flex Sofa" filed under "Treadmills", or a monitor in a skincare
+// category. That is an artefact of how the sample was produced.
+
+// Leave it alone. Do not try to fix it. Real data is messy too, and one of the
+// things you are learning is that the database will faithfully return whatever
+// you put in. If a query gives a strange-looking answer, the first question is
+// always "is my query wrong, or is my data odd?" — and here it is often the data.
+
+
+//================================================================================
+// SECTION 1 — YOUR VERY FIRST NODE
+//================================================================================
+
+// A NODE is a single thing. A customer. A product. An order.
+// A node can have:
+//   - one or more LABELS   : what kind of thing it is        (:Customer)
+//   - any number of PROPERTIES : facts about it              {name: "Carol"}
+
+// That is the whole idea. Let's make one.
+
+
+// ---------------------------------------------------------------- 1.1
+// The simplest possible node: one label, no properties.
+// CREATE makes something new.
+
+CREATE (:Customer);
+
+// --> "Added 1 label, created 1 node".
+//     Nothing is displayed, because we did not ask for anything back.
+
+
+// ---------------------------------------------------------------- 1.2
+// To see a node, we have to ask for it. MATCH finds, RETURN displays.
+// The "c" is a VARIABLE — a temporary name so we can refer to the node.
+
+MATCH (c:Customer)
+RETURN c;
+
+// --> One empty node. Click it in the graph view; it has no properties yet.
+
+
+// ---------------------------------------------------------------- 1.3
+// Delete it and start again, this time with properties.
+// DETACH DELETE removes a node and anything attached to it.
+
+MATCH (c:Customer {customerId: 3068})
+DETACH DELETE c;
+
+
+// ---------------------------------------------------------------- 1.4
+// A node with properties. Properties go in curly braces {} as key: value.
+// This is a real customer from our dataset.
+
+CREATE (c:Customer {
+  customerId: 3068,
+  firstName:  "Carol",
+  lastName:   "Glass",
+  city:       "North Royport",
+  state:      "NY",
+  segment:    "VIP"
+})
+RETURN c;
+
+// --> One node, six properties. Click it to inspect them.
+//     Note we added RETURN c, so this time we see what we made.
+
+
+// ---------------------------------------------------------------- 1.5
+// Properties are TYPED. Cypher supports several types, and the type matters
+// because it decides what you can do with the value.
+
+MATCH (c:Customer {customerId: 3068})
+SET c.loyaltyPoints = 17064,                    // integer
+    c.lifetimeRevenue = 24338.54,               // float  (decimal point)
+    c.newsletter = true,                        // boolean (true / false)
+    c.joined = datetime("2023-04-11T09:15:00"), // datetime
+    c.birthday = date("1988-02-19"),            // date
+    c.interests = ["Electronics", "Fitness"]    // list of strings
+RETURN c;
+
+// --> Same node, now with eleven properties.
+//     Quotes = text. No quotes = number, boolean, or a function call.
+
+
+// ---------------------------------------------------------------- 1.6
+// Return specific properties instead of the whole node.
+// Dot notation reads a property: c.firstName
+
+MATCH (c:Customer)
+RETURN c.firstName, c.lastName, c.city, c.loyaltyPoints;
+
+// --> A table with four columns instead of a graph picture.
+
+
+// ---------------------------------------------------------------- 1.7
+// Column headings default to the expression, which is ugly.
+// AS renames them.
+
+MATCH (c:Customer)
+RETURN c.firstName    AS first,
+       c.lastName     AS last,
+       c.city         AS city,
+       c.loyaltyPoints AS points;
+
+// --> Same data, readable headings. Always name your columns.
+
+
+// ---------------------------------------------------------------- 1.8
+// Three useful built-in functions for inspecting a node.
+
+MATCH (c:Customer)
+RETURN labels(c)     AS labels,      // which labels it has
+       keys(c)       AS propertyKeys, // which properties it has
+       properties(c) AS everything;   // all properties as one map
+
+// --> labels: ["Customer"], and a list of your eleven property names.
+
+
+// ---------------------------------------------------------------- 1.9
+// SET also UPDATES an existing property. Same syntax as adding one.
+
+MATCH (c:Customer {customerId: 3068})
+SET c.loyaltyPoints = 18000
+RETURN c.firstName AS first, c.loyaltyPoints AS points;
+
+// --> points is now 18000. SET overwrote the old value.
+
+
+// ---------------------------------------------------------------- 1.10
+// REMOVE deletes a property entirely. Different from setting it to null —
+// though in Neo4j, setting a property to null does remove it.
+
+MATCH (c:Customer {customerId: 3068})
+REMOVE c.birthday
+RETURN keys(c) AS remainingKeys;
+
+// --> "birthday" is gone from the list. Ten properties left.
+
+
+// ---------------------------------------------------------------- 1.11
+// A node can have MORE THAN ONE label. Labels are how you group nodes.
+
+MATCH (c:Customer {customerId: 3068})
+SET c:VIP
+RETURN labels(c) AS labels;
+
+// --> ["Customer", "VIP"]. Now this node answers to both.
+
+
+// ---------------------------------------------------------------- 1.12
+// Check it: match on the new label.
+
+MATCH (v:VIP)
+RETURN v.firstName AS first, labels(v) AS labels;
+
+// --> Our one node. It is a Customer AND a VIP.
+
+
+// ---------------------------------------------------------------- 1.13
+// Take the extra label off again.
+
+MATCH (c:Customer {customerId: 3068})
+REMOVE c:VIP
+RETURN labels(c) AS labels;
+
+// --> ["Customer"].
+
+
+// ---------------------------------------------------------------------------
+// CHECKPOINT 1 — you should now be able to answer these without looking:
+//   - What is the difference between CREATE and MATCH?
+//   - What does RETURN do, and what happens if you leave it out?
+//   - How do you read a property off a node?
+//   - What is the difference between a label and a property?
+// ---------------------------------------------------------------------------
+
+
+//================================================================================
+// SECTION 2 — A SECOND NODE, AND CONNECTING THE TWO
+//================================================================================
+
+// A graph is not much use with one node. The point of a graph database is the
+// RELATIONSHIPS between things.
+
+// A relationship:
+//   - connects exactly two nodes
+//   - always has a TYPE, in capitals   -[:BOUGHT]->
+//   - always has a DIRECTION           (a)-[:BOUGHT]->(b)
+//   - can have properties, just like a node
+
+// We will build this, one step at a time:
+
+//     (:Customer) -[:PLACED]-> (:Order) -[:CONTAINS]-> (:Product)
+
+
+// ---------------------------------------------------------------- 2.1
+// Create a second node — a Product. This is a real product from the dataset.
+// Notice: this is completely SEPARATE from our Customer. Nothing links them.
+
+CREATE (p:Product {
+  productId: 2732,
+  name:      "Flex Sofa",
+  brand:     "Horizon",
+  price:     1443.44,
+  category:  "Treadmills"
+})
+RETURN p;
+
+
+// ---------------------------------------------------------------- 2.2
+// Look at everything in the database now.
+// MATCH (n) with no label means "any node at all".
+
+MATCH (n)
+RETURN n;
+
+// --> TWO nodes, floating separately with no line between them.
+//     This is the important bit: creating two nodes does NOT connect them.
+
+
+// ---------------------------------------------------------------- 2.3
+// Now connect them. This is the key query of the whole section.
+//
+// Read it as three steps:
+//   1. MATCH the customer, call it c
+//   2. MATCH the product,  call it p
+//   3. CREATE a relationship from c to p
+//
+// You must FIND both nodes before you can connect them.
+
+
+CREATE (c:Customer {
+  customerId: 3069,
+  firstName:  "Prudhvi",
+  lastName:   "Akella",
+  city:       "Hyd",
+  state:      "TG",
+  segment:    "Genral"
+})
+RETURN c;
+
+MATCH (c:Customer {customerId: 3068})
+MATCH (p:Product   {productId:  2732})
+CREATE (c)-[:BOUGHT]->(p);
+
+
+MATCH (c:Customer {customerId: 3068})
+MATCH (p:Product   {productId:  2732})
+CREATE (c)<-[:BUYERS]-(p);
+
+
+MATCH (c:Customer {customerId: 3069})
+MATCH (p:Product   {productId:  2732})
+CREATE (c)-[:BOUGHT]->(p);
+
+MATCH (c:Customer {customerId: 3069})
+MATCH (p:Product   {productId:  2732})
+CREATE (c)<-[:BUYERS]-(p);
+
+// --> "Created 1 relationship".
+
+
+// ---------------------------------------------------------------- 2.4
+// Look again.
+
+MATCH (n)
+RETURN n;
+
+// --> Two nodes with an arrow between them. You have made a graph.
+
+
+// ---------------------------------------------------------------- 2.5
+// Match the pattern explicitly and return both ends.
+// The pattern (c)-[:BOUGHT]->(p) is read left to right, following the arrow.
+
+MATCH (c:Customer)-[:BOUGHT]->(p:Product)
+RETURN c.firstName AS customer, p.name AS product, p.price AS price;
+
+// --> One row: Carol Glass bought Flex Sofa.
+
+
+// ---------------------------------------------------------------- 2.6
+// DIRECTION MATTERS. This query asks for the arrow the other way round.
+
+MATCH (c:Customer)<-[:BOUGHT]-(p:Product)
+RETURN c.firstName AS customer, p.name AS product;
+
+// --> ZERO rows. The relationship goes customer -> product, not product -> customer.
+//     This trips up every beginner exactly once.
+
+
+// ---------------------------------------------------------------- 2.7
+// Leave the arrowhead off to match EITHER direction.
+
+MATCH (c:Customer)-[:BOUGHT]-(p:Product)
+RETURN c.firstName AS customer, p.name AS product;
+
+// --> One row again. No arrowhead = "connected, don't care which way".
+
+
+// ---------------------------------------------------------------- 2.8
+// Relationships can have properties too. Give the relationship a name (r)
+// so you can set things on it.
+
+MATCH (c:Customer)-[r:BOUGHT]->(p:Product)
+SET r.quantity = 2,
+    r.purchasedOn = date("2024-06-15")
+RETURN type(r) AS relType, r.quantity AS qty, r.purchasedOn AS purchased;
+
+
+MATCH (c:Customer {customerId: 3069})-[r:BOUGHT]->(p:Product)
+SET r.quantity = 2,
+    r.purchasedOn = date("2024-06-15")
+RETURN type(r) AS relType, r.quantity AS qty, r.purchasedOn AS purchased;
+
+// --> type() gives the relationship type as text: "BOUGHT".
+
+
+// ---------------------------------------------------------------- 2.9
+// Our real model puts an Order in between, which is more realistic:
+// a customer places an order, and that order contains products.
+// First remove the shortcut relationship.
+
+MATCH (:Customer )-[r:BOUGHT]->(:Product)
+DELETE r;
+
+// --> "Deleted 1 relationship". The two nodes remain.
+//     Note: DELETE for relationships, DETACH DELETE for nodes.
+
+
+// ---------------------------------------------------------------- 2.10
+// Create the Order node and BOTH relationships in one statement.
+// You can chain a pattern: (a)-[:X]->(b)-[:Y]->(c)
+
+MATCH (c:Customer {customerId: 3068})
+MATCH (p:Product  {productId:  2732})
+CREATE (c)-[:PLACED]->(o:Order {
+          orderId: 9001,
+          orderDate: datetime("2024-06-15T10:30:00"),
+          totalAmount: 2886.88,
+          status: "Delivered"
+       })-[:CONTAINS {quantity: 2, unitPrice: 1443.44}]->(p)
+RETURN c, o, p;
+
+// --> Three nodes in a line. Note the CONTAINS relationship carries the
+//     quantity and price — facts that belong to the pairing, not to either node.
+
+
+// ---------------------------------------------------------------- 2.11
+// Traverse the whole two-hop path.
+
+MATCH (c:Customer)-[:PLACED]->(o:Order)-[:CONTAINS]->(p:Product)
+RETURN c.firstName  AS customer,
+       o.orderId    AS orderId,
+       o.status     AS status,
+       p.name       AS product;
+
+// --> One row spanning three nodes. THIS is a traversal — you followed
+//     two relationships to connect a customer to a product.
+
+
+// ---------------------------------------------------------------- 2.12
+// Capture the whole path in a variable with "path ="
+// and inspect it with the path functions.
+
+MATCH path = (c:Customer)-[:PLACED]->(:Order)-[:CONTAINS]->(:Product)
+RETURN nodes(path)         AS nodesOnPath,
+       relationships(path) AS relsOnPath,
+       length(path)        AS hops;
+
+// --> hops = 2. length() counts RELATIONSHIPS, not nodes. A 3-node path is 2 hops.
+
+
+// ---------------------------------------------------------------------------
+// CHECKPOINT 2 — you should now be able to answer these:
+//   - Why do you need MATCH before CREATE when making a relationship?
+//   - What happens if you point the arrow the wrong way?
+//   - How do you match a relationship in either direction?
+//   - Where do you put a property that belongs to the pairing, not to
+//     either node? (Answer: on the relationship.)
+//   - Does length(path) count nodes or relationships?
+// ---------------------------------------------------------------------------
+
+
+//================================================================================
+// SECTION 3 — BUILDING A SMALL GRAPH
+//================================================================================
+
+// Three nodes is still a toy. Now we build up to a real (small) dataset.
+// First a few more nodes by hand, so you see the mechanics; then we load the
+// full teaching graph in one go.
+
+
+// ---------------------------------------------------------------- 3.1
+// Create several nodes in ONE statement, separated by commas.
+
+CREATE
+  (:Product {productId: 2101, name: "Basic Mouse",    brand: "Logitech", price: 24.99}),
+  (:Product {productId: 2102, name: "Elite Keyboard", brand: "Logitech", price: 89.50}),
+  (:Product {productId: 2103, name: "Pro Headset",    brand: "Sony",     price: 149.00});
+
+// --> "Created 3 nodes". Commas separate independent patterns.
+
+
+// ---------------------------------------------------------------- 3.2
+// Create a Category and link the Logitech products to it.
+// One MATCH can return MANY nodes — and then CREATE runs once per match.
+
+CREATE (:Category {categoryId: 900, name: "Computer Accessories", level: 2});
+
+// ---------------------------------------------------------------- 3.3
+// This is an important idea: MATCH found 2 products, so CREATE ran twice.
+
+MATCH (p:Product)
+WHERE p.brand = "Logitech"
+MATCH (cat:Category {categoryId: 900})
+CREATE (p)-[:IN_CATEGORY]->(cat);
+
+// --> "Created 2 relationships" — one per matched product.
+//     A query runs once for every row that reaches it. Remember this;
+//     it explains almost every surprising result you will ever get.
+
+
+// ---------------------------------------------------------------- 3.4
+// Now meet MERGE. MERGE means "find it, or create it if absent".
+// Run this query. Then run it AGAIN. Then a third time.
+
+MERGE (b:Brand {name: "Logitech"})
+RETURN b, b.name AS brandName;
+
+// --> First run: "Created 1 node". Second and third run: no changes.
+//     MERGE is idempotent — safe to re-run. CREATE is not.
+
+
+// ---------------------------------------------------------------- 3.5
+// Compare: run THIS one three times and watch the duplicates pile up.
+
+CREATE (d:Demo {name: "duplicate me"})
+RETURN d;
+
+// ---------------------------------------------------------------- 3.6
+// Count the damage.
+
+MATCH (d:Demo)
+RETURN count(d) AS howManyDemoNodes;
+
+// --> 3 if you ran 3.5 three times. This is why loaders always use MERGE.
+
+
+// ---------------------------------------------------------------- 3.7
+// UNWIND turns a LIST into ROWS. This is how you create many things at once.
+// Read it as: "for each map in this list, call it row, then MERGE a node".
+
+UNWIND [
+  {id: 2104, name: "Wireless Mouse", brand: "Logitech", price: 39.99},
+  {id: 2105, name: "Gaming Chair",   brand: "Secretlab", price: 429.00},
+  {id: 2106, name: "USB Hub",        brand: "Anker",    price: 34.95}
+] AS row
+MERGE (p:Product {productId: row.id})
+SET   p.name = row.name, p.brand = row.brand, p.price = row.price
+RETURN count(p) AS productsCreated;
+
+// --> 3. UNWIND + MERGE + SET is THE standard loading pattern in Cypher.
+//     You will use it for the rest of your life. Learn this shape.
+
+
+// ---------------------------------------------------------------- 3.8
+// See what we have built so far.
+
+MATCH (n)
+RETURN labels(n)[0] AS label, count(*) AS count
+ORDER BY count DESC;
+
+// --> Product, Category, Customer, Order, Brand, Demo.
+//     labels(n)[0] takes the FIRST label, since labels() returns a list.
+
+
+// =============================================================================
+//  LOADING THE FULL TEACHING GRAPH
+// =============================================================================
+//  Everything from here on uses a proper dataset: 24 customers,
+//  66 orders, 186 products, 54 categories,
+//  63 reviews and 8 suppliers.
+//
+//  Run queries 3.9 through 3.19 IN ORDER, once each. They take a few seconds.
+//
+//  The model:
+//     (:Customer)-[:PLACED]->(:Order)-[:CONTAINS]->(:Product)
+//     (:Product)-[:IN_CATEGORY]->(:Category)-[:PARENT_OF]->(:Category)
+//     (:Customer)-[:WROTE]->(:Review)-[:REVIEWS]->(:Product)
+//     (:Supplier)-[:SUPPLIES]->(:Product)
+// =============================================================================
+
+
+// ---------------------------------------------------------------- 3.9
+// Wipe everything. Start clean.
+
+MATCH (n) DETACH DELETE n;
+
+// --> All nodes and relationships gone. Verify with: MATCH (n) RETURN count(n);
+
+
+// ---------------------------------------------------------------- 3.10
+// Constraints. A uniqueness constraint does two jobs:
+//   1. stops duplicates
+//   2. creates an index, which makes MERGE and lookups fast
+// ALWAYS create these BEFORE loading data.
+// Run all six lines one at a time.
+
+CREATE CONSTRAINT customer_id IF NOT EXISTS FOR (c:Customer) REQUIRE c.customerId IS UNIQUE;
+
+CREATE CONSTRAINT product_id  IF NOT EXISTS FOR (p:Product)  REQUIRE p.productId  IS UNIQUE;
+
+CREATE CONSTRAINT order_id    IF NOT EXISTS FOR (o:Order)    REQUIRE o.orderId    IS UNIQUE;
+
+CREATE CONSTRAINT category_id IF NOT EXISTS FOR (c:Category) REQUIRE c.categoryId IS UNIQUE;
+
+CREATE CONSTRAINT review_id   IF NOT EXISTS FOR (r:Review)   REQUIRE r.reviewId   IS UNIQUE;
+
+CREATE CONSTRAINT supplier_id IF NOT EXISTS FOR (s:Supplier) REQUIRE s.supplierId IS UNIQUE;
+
+// --> Check them with:  SHOW CONSTRAINTS;
+
+
+// ---------------------------------------------------------------- 3.11
+// Categories (54 nodes).
+
+UNWIND [
+  {categoryId: 1, name: "Electronics", level: 1, parentId: null},
+  {categoryId: 2, name: "Clothing & Apparel", level: 1, parentId: null},
+  {categoryId: 3, name: "Home & Garden", level: 1, parentId: null},
+  {categoryId: 4, name: "Sports & Outdoors", level: 1, parentId: null},
+  {categoryId: 5, name: "Beauty & Personal Care", level: 1, parentId: null},
+  {categoryId: 6, name: "Books & Media", level: 1, parentId: null},
+  {categoryId: 7, name: "Toys & Games", level: 1, parentId: null},
+  {categoryId: 8, name: "Food & Grocery", level: 1, parentId: null},
+  {categoryId: 9, name: "Automotive", level: 1, parentId: null},
+  {categoryId: 10, name: "Health & Wellness", level: 1, parentId: null},
+  {categoryId: 11, name: "Smartphones", level: 2, parentId: 1},
+  {categoryId: 12, name: "Laptops & Computers", level: 2, parentId: 1},
+  {categoryId: 13, name: "TV & Audio", level: 2, parentId: 1},
+  {categoryId: 14, name: "Cameras", level: 2, parentId: 1},
+  {categoryId: 15, name: "Men's Clothing", level: 2, parentId: 2},
+  {categoryId: 16, name: "Women's Clothing", level: 2, parentId: 2},
+  {categoryId: 17, name: "Kids' Clothing", level: 2, parentId: 2},
+  {categoryId: 18, name: "Shoes & Footwear", level: 2, parentId: 2},
+  {categoryId: 19, name: "Furniture", level: 2, parentId: 3},
+  {categoryId: 20, name: "Kitchen & Dining", level: 2, parentId: 3},
+  {categoryId: 21, name: "Bedding & Bath", level: 2, parentId: 3},
+  {categoryId: 22, name: "Garden & Outdoor", level: 2, parentId: 3},
+  {categoryId: 23, name: "Exercise & Fitness", level: 2, parentId: 4},
+  {categoryId: 24, name: "Outdoor Recreation", level: 2, parentId: 4},
+  {categoryId: 25, name: "Team Sports", level: 2, parentId: 4},
+  {categoryId: 26, name: "Skincare", level: 2, parentId: 5},
+  {categoryId: 27, name: "Hair Care", level: 2, parentId: 5},
+  {categoryId: 28, name: "Makeup", level: 2, parentId: 5},
+  {categoryId: 29, name: "Fiction", level: 2, parentId: 6},
+  {categoryId: 30, name: "Non-Fiction", level: 2, parentId: 6},
+  {categoryId: 32, name: "Board Games", level: 2, parentId: 7},
+  {categoryId: 33, name: "Action Figures", level: 2, parentId: 7},
+  {categoryId: 34, name: "Building Toys", level: 2, parentId: 7},
+  {categoryId: 35, name: "Snacks & Candy", level: 2, parentId: 8},
+  {categoryId: 36, name: "Beverages", level: 2, parentId: 8},
+  {categoryId: 37, name: "Car Accessories", level: 2, parentId: 9},
+  {categoryId: 39, name: "Vitamins & Supplements", level: 2, parentId: 10},
+  {categoryId: 40, name: "Medical Devices", level: 2, parentId: 10},
+  {categoryId: 41, name: "iPhone", level: 3, parentId: 11},
+  {categoryId: 42, name: "Android Phones", level: 3, parentId: 11},
+  {categoryId: 43, name: "Gaming Laptops", level: 3, parentId: 12},
+  {categoryId: 44, name: "Ultrabooks", level: 3, parentId: 12},
+  {categoryId: 45, name: "4K TVs", level: 3, parentId: 13},
+  {categoryId: 46, name: "Soundbars", level: 3, parentId: 13},
+  {categoryId: 47, name: "DSLR Cameras", level: 3, parentId: 14},
+  {categoryId: 48, name: "Action Cameras", level: 3, parentId: 14},
+  {categoryId: 49, name: "Running Shoes", level: 3, parentId: 18},
+  {categoryId: 50, name: "Casual Shoes", level: 3, parentId: 18},
+  {categoryId: 51, name: "Sofas & Couches", level: 3, parentId: 19},
+  {categoryId: 52, name: "Beds & Frames", level: 3, parentId: 19},
+  {categoryId: 53, name: "Protein & Supplements", level: 3, parentId: 39},
+  {categoryId: 54, name: "Yoga & Pilates", level: 3, parentId: 23},
+  {categoryId: 55, name: "Treadmills", level: 3, parentId: 23},
+  {categoryId: 56, name: "Face Moisturizers", level: 3, parentId: 26}
+] AS row
+MERGE (c:Category {categoryId: row.categoryId})
+SET   c.name = row.name, c.level = row.level, c.parentId = row.parentId
+RETURN count(c) AS categoriesLoaded;
+
+// --> 54
+
+
+// ---------------------------------------------------------------- 3.12
+// Category hierarchy: link each child to its parent (44 relationships).
+// Categories point at other Categories — a node can relate to its own kind.
+
+MATCH (child:Category)
+WHERE child.parentId IS NOT NULL
+MATCH (parent:Category {categoryId: child.parentId})
+MERGE (parent)-[:PARENT_OF]->(child)
+RETURN count(*) AS hierarchyLinks;
+
+// --> 44
+
+
+// ---------------------------------------------------------------- 3.13
+// Products (186 nodes).
+
+UNWIND [
+  {productId: 2002, name: "Advanced Monitor", category: "Face Moisturizers", brand: "Neutrogena", price: 132.18, stock: 360, avgRating: 4, reviewCount: 35, weightKg: 0.06, featured: false, active: true},
+  {productId: 2012, name: "Smart Lamp", category: "Cameras", brand: "Nikon", price: 24.07, stock: 71, avgRating: 3.80, reviewCount: 37, weightKg: 0.97, featured: false, active: true},
+  {productId: 2013, name: "Classic Mouse", category: "Exercise & Fitness", brand: "Peloton", price: 295.95, stock: 186, avgRating: 4.30, reviewCount: 30, weightKg: 26.48, featured: false, active: true},
+  {productId: 2017, name: "Smart Pants", category: "iPhone", brand: "Apple", price: 24.22, stock: 47, avgRating: 4.30, reviewCount: 37, weightKg: 2.69, featured: false, active: true},
+  {productId: 2021, name: "Eco Headphone", category: "Casual Shoes", brand: "Nike", price: 1514.43, stock: 416, avgRating: 4.20, reviewCount: 28, weightKg: 0.45, featured: false, active: true},
+  {productId: 2023, name: "Classic Backpack", category: "Makeup", brand: "MAC", price: 267.98, stock: 285, avgRating: 4.20, reviewCount: 35, weightKg: 0.12, featured: false, active: true},
+  {productId: 2026, name: "Advanced Pillow", category: "Building Toys", brand: "Mega Bloks", price: 6.22, stock: 392, avgRating: 3.80, reviewCount: 25, weightKg: 0.97, featured: false, active: true},
+  {productId: 2027, name: "Deluxe Cover", category: "Running Shoes", brand: "Adidas", price: 1967.52, stock: 127, avgRating: 4, reviewCount: 24, weightKg: 0.44, featured: true, active: false},
+  {productId: 2030, name: "Signature Sofa", category: "Vitamins & Supplements", brand: "Centrum", price: 292.87, stock: 15, avgRating: 4.40, reviewCount: 27, weightKg: 0.94, featured: false, active: true},
+  {productId: 2039, name: "Ultra Pants", category: "Skincare", brand: "Clinique", price: 1651.77, stock: 246, avgRating: 3.80, reviewCount: 28, weightKg: 0.15, featured: false, active: true},
+  {productId: 2043, name: "Signature Dress", category: "Beds & Frames", brand: "LG", price: 5.84, stock: 334, avgRating: 4.10, reviewCount: 25, weightKg: 3.72, featured: false, active: true},
+  {productId: 2048, name: "Classic Mat", category: "Beds & Frames", brand: "LG", price: 518.65, stock: 35, avgRating: 4.10, reviewCount: 18, weightKg: 4.96, featured: false, active: true},
+  {productId: 2051, name: "Elite Case", category: "Yoga & Pilates", brand: "Gaiam", price: 1608.77, stock: 448, avgRating: 4.20, reviewCount: 35, weightKg: 1.55, featured: false, active: true},
+  {productId: 2058, name: "Signature Mat", category: "Face Moisturizers", brand: "Neutrogena", price: 1656.97, stock: 330, avgRating: 4.40, reviewCount: 29, weightKg: 0.05, featured: false, active: true},
+  {productId: 2066, name: "Elite Backpack", category: "Car Accessories", brand: "Meguiar's", price: 1204.36, stock: 87, avgRating: 4.20, reviewCount: 25, weightKg: 4.51, featured: false, active: true},
+  {productId: 2070, name: "Deluxe Watch", category: "Protein & Supplements", brand: "Optimum Nutrition", price: 1465.68, stock: 449, avgRating: 4.20, reviewCount: 22, weightKg: 2.74, featured: false, active: true},
+  {productId: 2085, name: "Essential Sofa", category: "Laptops & Computers", brand: "Asus", price: 253.15, stock: 301, avgRating: 4.30, reviewCount: 27, weightKg: 2.08, featured: false, active: true},
+  {productId: 2086, name: "Advanced Sneaker", category: "iPhone", brand: "Apple", price: 17.43, stock: 338, avgRating: 4.10, reviewCount: 25, weightKg: 2.75, featured: false, active: true},
+  {productId: 2090, name: "Classic Pants", category: "Hair Care", brand: "Dove", price: 18.52, stock: 40, avgRating: 4.30, reviewCount: 30, weightKg: 3.96, featured: false, active: true},
+  {productId: 2096, name: "Eco Shirt", category: "Treadmills", brand: "Horizon", price: 78.64, stock: 232, avgRating: 4.10, reviewCount: 24, weightKg: 60.08, featured: false, active: true},
+  {productId: 2112, name: "Lite Camera", category: "Shoes & Footwear", brand: "Sony", price: 12.24, stock: 261, avgRating: 4.10, reviewCount: 28, weightKg: 0.52, featured: false, active: true},
+  {productId: 2119, name: "Signature Dress", category: "Hair Care", brand: "Garnier", price: 1043.48, stock: 122, avgRating: 4.20, reviewCount: 28, weightKg: 3.67, featured: false, active: true},
+  {productId: 2127, name: "Signature Cover", category: "Treadmills", brand: "Bowflex", price: 272.06, stock: 123, avgRating: 3.80, reviewCount: 25, weightKg: 75.03, featured: false, active: true},
+  {productId: 2131, name: "Smart Cover", category: "Action Cameras", brand: "Samsung", price: 19.19, stock: 137, avgRating: 3.90, reviewCount: 22, weightKg: 0.65, featured: false, active: false},
+  {productId: 2140, name: "Max Pillow", category: "Yoga & Pilates", brand: "Liforme", price: 9, stock: 451, avgRating: 4, reviewCount: 30, weightKg: 1.02, featured: false, active: true},
+  {productId: 2142, name: "Signature Pants", category: "Bedding & Bath", brand: "Purple", price: 46.84, stock: 22, avgRating: 4.30, reviewCount: 39, weightKg: 2.37, featured: false, active: true},
+  {productId: 2144, name: "Ultra Headphone", category: "Running Shoes", brand: "Brooks", price: 222.05, stock: 299, avgRating: 4.20, reviewCount: 26, weightKg: 0.37, featured: false, active: true},
+  {productId: 2147, name: "Signature Cover", category: "Kitchen & Dining", brand: "Instant Pot", price: 1752.63, stock: 136, avgRating: 3.90, reviewCount: 37, weightKg: 4.32, featured: false, active: true},
+  {productId: 2149, name: "Pro Dress", category: "Bedding & Bath", brand: "Casper", price: 16.06, stock: 289, avgRating: 4.10, reviewCount: 32, weightKg: 0.94, featured: false, active: true},
+  {productId: 2167, name: "Premium Shirt", category: "Smartphones", brand: "Google", price: 247.79, stock: 206, avgRating: 4.30, reviewCount: 43, weightKg: 0.18, featured: false, active: true},
+  {productId: 2186, name: "Classic Sneaker", category: "Kitchen & Dining", brand: "KitchenAid", price: 596.05, stock: 372, avgRating: 4.10, reviewCount: 25, weightKg: 1.63, featured: false, active: true},
+  {productId: 2194, name: "Classic Watch", category: "Soundbars", brand: "JBL", price: 416.37, stock: 133, avgRating: 4, reviewCount: 31, weightKg: 3.84, featured: false, active: true},
+  {productId: 2198, name: "Signature Jacket", category: "Building Toys", brand: "K'NEX", price: 477.12, stock: 402, avgRating: 4.30, reviewCount: 18, weightKg: 1.81, featured: false, active: true},
+  {productId: 2200, name: "Deluxe Shoes", category: "Non-Fiction", brand: "Simon & Schuster", price: 17.55, stock: 228, avgRating: 4.50, reviewCount: 28, weightKg: 2.01, featured: false, active: true},
+  {productId: 2201, name: "Pro Backpack", category: "Makeup", brand: "Maybelline", price: 1653, stock: 303, avgRating: 4.30, reviewCount: 24, weightKg: 0.11, featured: false, active: true},
+  {productId: 2204, name: "Deluxe Keyboard", category: "Face Moisturizers", brand: "La Roche-Posay", price: 703.65, stock: 197, avgRating: 3.80, reviewCount: 23, weightKg: 0.15, featured: false, active: true},
+  {productId: 2208, name: "Lite Sneaker", category: "Smartphones", brand: "OnePlus", price: 13.11, stock: 277, avgRating: 4, reviewCount: 28, weightKg: 0.21, featured: false, active: true},
+  {productId: 2209, name: "Pro Mat", category: "Ultrabooks", brand: "Philips", price: 1776.54, stock: 350, avgRating: 3.90, reviewCount: 26, weightKg: 4.32, featured: false, active: false},
+  {productId: 2221, name: "Flex Monitor", category: "DSLR Cameras", brand: "Canon", price: 22.53, stock: 167, avgRating: 3.80, reviewCount: 28, weightKg: 2.70, featured: false, active: true},
+  {productId: 2223, name: "Deluxe Lamp", category: "Exercise & Fitness", brand: "NordicTrack", price: 15.24, stock: 373, avgRating: 4.20, reviewCount: 23, weightKg: 29.63, featured: false, active: true},
+  {productId: 2232, name: "Premium Charger", category: "Non-Fiction", brand: "Penguin", price: 6.14, stock: 30, avgRating: 4.10, reviewCount: 25, weightKg: 3.56, featured: false, active: true},
+  {productId: 2235, name: "Classic Mat", category: "Garden & Outdoor", brand: "Bosch", price: 29.95, stock: 38, avgRating: 4.20, reviewCount: 30, weightKg: 2.02, featured: false, active: true},
+  {productId: 2238, name: "Ultra Keyboard", category: "Exercise & Fitness", brand: "Bowflex", price: 1635.10, stock: 307, avgRating: 4.30, reviewCount: 32, weightKg: 25.60, featured: false, active: true},
+  {productId: 2247, name: "Flex Watch", category: "Smartphones", brand: "Google", price: 1357.47, stock: 214, avgRating: 4.20, reviewCount: 20, weightKg: 0.16, featured: true, active: true},
+  {productId: 2253, name: "Essential Watch", category: "Women's Clothing", brand: "Zara", price: 34.79, stock: 381, avgRating: 4.20, reviewCount: 35, weightKg: 2.87, featured: true, active: true},
+  {productId: 2257, name: "Flex Backpack", category: "Team Sports", brand: "Adidas", price: 1503.01, stock: 272, avgRating: 4, reviewCount: 34, weightKg: 3.20, featured: false, active: true},
+  {productId: 2263, name: "Ultra Stand", category: "Yoga & Pilates", brand: "Gaiam", price: 89.05, stock: 494, avgRating: 4.20, reviewCount: 34, weightKg: 1.64, featured: false, active: true},
+  {productId: 2272, name: "Flex Mat", category: "Building Toys", brand: "Mega Bloks", price: 621.15, stock: 13, avgRating: 4, reviewCount: 32, weightKg: 0.80, featured: false, active: true},
+  {productId: 2274, name: "Signature Tablet", category: "Android Phones", brand: "Google", price: 1653.47, stock: 166, avgRating: 4.20, reviewCount: 44, weightKg: 1.72, featured: false, active: true},
+  {productId: 2277, name: "Elite Pants", category: "Team Sports", brand: "Adidas", price: 90.73, stock: 243, avgRating: 4.40, reviewCount: 31, weightKg: 4.96, featured: false, active: true},
+  {productId: 2282, name: "Lite Tablet", category: "Laptops & Computers", brand: "Dell", price: 357.46, stock: 258, avgRating: 4, reviewCount: 35, weightKg: 3.21, featured: false, active: true},
+  {productId: 2284, name: "Deluxe Headphone", category: "Gaming Laptops", brand: "MSI", price: 44.38, stock: 317, avgRating: 4.10, reviewCount: 35, weightKg: 3.13, featured: false, active: true},
+  {productId: 2291, name: "Pro Tablet", category: "Gaming Laptops", brand: "Asus", price: 440.83, stock: 286, avgRating: 4.40, reviewCount: 21, weightKg: 3.92, featured: false, active: true},
+  {productId: 2295, name: "Essential Sneaker", category: "Yoga & Pilates", brand: "Gaiam", price: 5.35, stock: 379, avgRating: 4.30, reviewCount: 37, weightKg: 1.73, featured: false, active: true},
+  {productId: 2297, name: "Flex Camera", category: "Fiction", brand: "Random House", price: 9.57, stock: 314, avgRating: 4, reviewCount: 30, weightKg: 4.63, featured: false, active: false},
+  {productId: 2299, name: "Max Sneaker", category: "iPhone", brand: "Apple", price: 17.38, stock: 151, avgRating: 4.10, reviewCount: 31, weightKg: 2.76, featured: false, active: true},
+  {productId: 2300, name: "Advanced Monitor", category: "Garden & Outdoor", brand: "Bosch", price: 1228.30, stock: 412, avgRating: 4.20, reviewCount: 22, weightKg: 0.59, featured: false, active: false},
+  {productId: 2306, name: "Signature Backpack", category: "iPhone", brand: "Apple", price: 47.32, stock: 192, avgRating: 4.30, reviewCount: 26, weightKg: 2.57, featured: true, active: false},
+  {productId: 2308, name: "Elite Tablet", category: "Skincare", brand: "Estee Lauder", price: 30.76, stock: 422, avgRating: 4.10, reviewCount: 37, weightKg: 0.10, featured: false, active: true},
+  {productId: 2310, name: "Essential Monitor", category: "Non-Fiction", brand: "Penguin", price: 416.99, stock: 341, avgRating: 4.20, reviewCount: 33, weightKg: 1.38, featured: false, active: true},
+  {productId: 2312, name: "Smart Shirt", category: "Skincare", brand: "Estee Lauder", price: 10.25, stock: 274, avgRating: 4.30, reviewCount: 27, weightKg: 0.18, featured: false, active: true},
+  {productId: 2325, name: "Compact Pants", category: "Smartphones", brand: "Apple", price: 470.62, stock: 364, avgRating: 3.90, reviewCount: 30, weightKg: 0.17, featured: false, active: true},
+  {productId: 2329, name: "Flex Sneaker", category: "Laptops & Computers", brand: "Lenovo", price: 22.64, stock: 304, avgRating: 4.10, reviewCount: 34, weightKg: 3.20, featured: true, active: true},
+  {productId: 2331, name: "Essential Shirt", category: "Protein & Supplements", brand: "Dymatize", price: 182.19, stock: 235, avgRating: 4.20, reviewCount: 33, weightKg: 0.92, featured: false, active: true},
+  {productId: 2335, name: "Advanced Blender", category: "Smartphones", brand: "Google", price: 437.15, stock: 28, avgRating: 3.60, reviewCount: 25, weightKg: 0.22, featured: true, active: true},
+  {productId: 2341, name: "Eco Watch", category: "iPhone", brand: "Apple", price: 811.87, stock: 189, avgRating: 3.90, reviewCount: 27, weightKg: 3.94, featured: true, active: true},
+  {productId: 2351, name: "Smart Shoes", category: "Skincare", brand: "Clinique", price: 180.62, stock: 406, avgRating: 4.20, reviewCount: 27, weightKg: 0.20, featured: false, active: true},
+  {productId: 2358, name: "Max Pillow", category: "Running Shoes", brand: "New Balance", price: 76.09, stock: 253, avgRating: 4.30, reviewCount: 30, weightKg: 0.42, featured: false, active: true},
+  {productId: 2367, name: "Advanced Blender", category: "Yoga & Pilates", brand: "Gaiam", price: 53.82, stock: 270, avgRating: 4, reviewCount: 19, weightKg: 2.40, featured: false, active: true},
+  {productId: 2368, name: "Flex Mouse", category: "Soundbars", brand: "Samsung", price: 159.02, stock: 292, avgRating: 4.40, reviewCount: 27, weightKg: 4.55, featured: false, active: true},
+  {productId: 2379, name: "Flex Dress", category: "Board Games", brand: "Ravensburger", price: 12.09, stock: 158, avgRating: 4.20, reviewCount: 19, weightKg: 0.89, featured: false, active: true},
+  {productId: 2383, name: "Advanced Camera", category: "Android Phones", brand: "OnePlus", price: 334.18, stock: 9, avgRating: 4.10, reviewCount: 26, weightKg: 4.42, featured: false, active: true},
+  {productId: 2396, name: "Advanced Stand", category: "Running Shoes", brand: "Nike", price: 242.44, stock: 357, avgRating: 4.10, reviewCount: 36, weightKg: 0.47, featured: true, active: true},
+  {productId: 2397, name: "Lite Camera", category: "Building Toys", brand: "LEGO", price: 142.71, stock: 103, avgRating: 4.20, reviewCount: 25, weightKg: 1.69, featured: false, active: true},
+  {productId: 2398, name: "Compact Stand", category: "Shoes & Footwear", brand: "LG", price: 62.99, stock: 294, avgRating: 4.30, reviewCount: 31, weightKg: 3.67, featured: false, active: true},
+  {productId: 2399, name: "Pro Charger", category: "Gaming Laptops", brand: "MSI", price: 12.77, stock: 487, avgRating: 4.10, reviewCount: 32, weightKg: 2.29, featured: false, active: true},
+  {productId: 2420, name: "Flex Jacket", category: "Casual Shoes", brand: "Skechers", price: 16.16, stock: 398, avgRating: 4.10, reviewCount: 31, weightKg: 0.39, featured: false, active: true},
+  {productId: 2422, name: "Elite Watch", category: "Skincare", brand: "Neutrogena", price: 17.88, stock: 442, avgRating: 4.10, reviewCount: 29, weightKg: 0.09, featured: false, active: true},
+  {productId: 2439, name: "Lite Cover", category: "Medical Devices", brand: "Braun", price: 212.91, stock: 498, avgRating: 4.10, reviewCount: 21, weightKg: 1.65, featured: false, active: true},
+  {productId: 2449, name: "Max Bag", category: "Yoga & Pilates", brand: "Lululemon", price: 380.40, stock: 77, avgRating: 3.90, reviewCount: 29, weightKg: 1.61, featured: false, active: true},
+  {productId: 2458, name: "Essential Backpack", category: "Action Cameras", brand: "LG", price: 5.31, stock: 423, avgRating: 3.90, reviewCount: 28, weightKg: 1, featured: false, active: true},
+  {productId: 2459, name: "Essential Sneaker", category: "Garden & Outdoor", brand: "Philips", price: 61.95, stock: 201, avgRating: 4.30, reviewCount: 31, weightKg: 0.43, featured: false, active: true},
+  {productId: 2468, name: "Elite Stand", category: "Skincare", brand: "Estee Lauder", price: 35.55, stock: 209, avgRating: 4.30, reviewCount: 31, weightKg: 0.17, featured: false, active: true},
+  {productId: 2471, name: "Pro Sofa", category: "Sofas & Couches", brand: "La-Z-Boy", price: 708.27, stock: 275, avgRating: 4, reviewCount: 31, weightKg: 42.77, featured: false, active: true},
+  {productId: 2475, name: "Eco Tablet", category: "Exercise & Fitness", brand: "NordicTrack", price: 95.13, stock: 113, avgRating: 4, reviewCount: 27, weightKg: 48.56, featured: false, active: true},
+  {productId: 2479, name: "Advanced Bag", category: "iPhone", brand: "Apple", price: 67.31, stock: 92, avgRating: 4.10, reviewCount: 26, weightKg: 3.63, featured: false, active: true},
+  {productId: 2481, name: "Flex Watch", category: "Exercise & Fitness", brand: "Peloton", price: 124.98, stock: 65, avgRating: 3.90, reviewCount: 25, weightKg: 37.49, featured: false, active: true},
+  {productId: 2486, name: "Advanced Sofa", category: "Fiction", brand: "Random House", price: 23.11, stock: 416, avgRating: 4.20, reviewCount: 33, weightKg: 0.95, featured: false, active: true},
+  {productId: 2490, name: "Smart Blender", category: "TV & Audio", brand: "LG", price: 253.66, stock: 418, avgRating: 4.20, reviewCount: 35, weightKg: 0.37, featured: false, active: true},
+  {productId: 2493, name: "Pro Dress", category: "Laptops & Computers", brand: "HP", price: 109.59, stock: 161, avgRating: 4.20, reviewCount: 33, weightKg: 1.97, featured: false, active: true},
+  {productId: 2501, name: "Smart Speaker", category: "Action Cameras", brand: "Samsung", price: 36.34, stock: 439, avgRating: 4.10, reviewCount: 20, weightKg: 2.75, featured: false, active: true},
+  {productId: 2505, name: "Essential Case", category: "Board Games", brand: "Hasbro", price: 792.58, stock: 461, avgRating: 4, reviewCount: 26, weightKg: 0.48, featured: false, active: true},
+  {productId: 2521, name: "Elite Dress", category: "Snacks & Candy", brand: "Lay's", price: 5.85, stock: 278, avgRating: 4.20, reviewCount: 39, weightKg: 0.15, featured: false, active: true},
+  {productId: 2530, name: "Essential Camera", category: "Action Figures", brand: "Mattel", price: 1375.67, stock: 191, avgRating: 4, reviewCount: 33, weightKg: 1.95, featured: false, active: true},
+  {productId: 2537, name: "Compact Pillow", category: "Building Toys", brand: "K'NEX", price: 60.47, stock: 75, avgRating: 4.10, reviewCount: 33, weightKg: 1.31, featured: false, active: true},
+  {productId: 2539, name: "Smart Mouse", category: "DSLR Cameras", brand: "Sony", price: 9.14, stock: 18, avgRating: 4.20, reviewCount: 29, weightKg: 4.10, featured: false, active: true},
+  {productId: 2540, name: "Ultra Bag", category: "Women's Clothing", brand: "Calvin Klein", price: 1341.72, stock: 451, avgRating: 4, reviewCount: 27, weightKg: 4.53, featured: true, active: true},
+  {productId: 2543, name: "Classic Jacket", category: "Car Accessories", brand: "Chemical Guys", price: 915.89, stock: 237, avgRating: 4.30, reviewCount: 22, weightKg: 1.64, featured: false, active: true},
+  {productId: 2545, name: "Compact Shirt", category: "Fiction", brand: "HarperCollins", price: 10.25, stock: 102, avgRating: 4.10, reviewCount: 30, weightKg: 5, featured: false, active: true},
+  {productId: 2551, name: "Compact Shoes", category: "Action Figures", brand: "Funko", price: 7.67, stock: 58, avgRating: 4.20, reviewCount: 31, weightKg: 4.06, featured: false, active: true},
+  {productId: 2555, name: "Compact Pillow", category: "TV & Audio", brand: "Samsung", price: 18.02, stock: 148, avgRating: 4.30, reviewCount: 26, weightKg: 2.35, featured: false, active: true},
+  {productId: 2564, name: "Classic Cover", category: "Bedding & Bath", brand: "Parachute", price: 49.61, stock: 418, avgRating: 4.10, reviewCount: 35, weightKg: 1.09, featured: false, active: true},
+  {productId: 2570, name: "Compact Headphone", category: "Beverages", brand: "PepsiCo", price: 51.77, stock: 212, avgRating: 4.20, reviewCount: 31, weightKg: 1.08, featured: false, active: false},
+  {productId: 2573, name: "Eco Lamp", category: "4K TVs", brand: "Sony", price: 51.72, stock: 384, avgRating: 4.20, reviewCount: 35, weightKg: 17.26, featured: true, active: true},
+  {productId: 2575, name: "Signature Sneaker", category: "Smartphones", brand: "Google", price: 109.18, stock: 386, avgRating: 4.10, reviewCount: 39, weightKg: 0.24, featured: false, active: true},
+  {productId: 2579, name: "Pro Case", category: "Bedding & Bath", brand: "Brooklinen", price: 117.66, stock: 327, avgRating: 4.30, reviewCount: 33, weightKg: 1.80, featured: false, active: true},
+  {productId: 2586, name: "Compact Headphone", category: "Bedding & Bath", brand: "Purple", price: 14.07, stock: 145, avgRating: 4.20, reviewCount: 23, weightKg: 1.02, featured: false, active: true},
+  {productId: 2596, name: "Max Mat", category: "Vitamins & Supplements", brand: "Garden of Life", price: 889.48, stock: 258, avgRating: 4, reviewCount: 30, weightKg: 3.27, featured: false, active: false},
+  {productId: 2603, name: "Signature Backpack", category: "Beverages", brand: "Nestlé", price: 571.06, stock: 259, avgRating: 4, reviewCount: 31, weightKg: 0.59, featured: true, active: true},
+  {productId: 2610, name: "Elite Mat", category: "Running Shoes", brand: "ASICS", price: 1448.21, stock: 150, avgRating: 3.70, reviewCount: 28, weightKg: 0.31, featured: false, active: true},
+  {productId: 2614, name: "Deluxe Dress", category: "Gaming Laptops", brand: "MSI", price: 118.41, stock: 448, avgRating: 4.30, reviewCount: 26, weightKg: 3.73, featured: true, active: true},
+  {productId: 2620, name: "Premium Sofa", category: "Outdoor Recreation", brand: "REI", price: 27.96, stock: 458, avgRating: 4, reviewCount: 26, weightKg: 4.48, featured: false, active: true},
+  {productId: 2624, name: "Smart Keyboard", category: "Men's Clothing", brand: "Levi's", price: 1025.06, stock: 328, avgRating: 4.30, reviewCount: 33, weightKg: 0.79, featured: false, active: true},
+  {productId: 2630, name: "Classic Sneaker", category: "Building Toys", brand: "K'NEX", price: 18.22, stock: 79, avgRating: 4, reviewCount: 23, weightKg: 1.78, featured: true, active: true},
+  {productId: 2637, name: "Lite Dress", category: "Building Toys", brand: "LEGO", price: 953.67, stock: 436, avgRating: 3.80, reviewCount: 21, weightKg: 0.50, featured: false, active: true},
+  {productId: 2643, name: "Essential Jacket", category: "Yoga & Pilates", brand: "Gaiam", price: 24.15, stock: 475, avgRating: 4, reviewCount: 26, weightKg: 0.53, featured: false, active: true},
+  {productId: 2645, name: "Ultra Bag", category: "4K TVs", brand: "Hisense", price: 1435.07, stock: 378, avgRating: 3.80, reviewCount: 25, weightKg: 12.55, featured: false, active: true},
+  {productId: 2672, name: "Ultra Tablet", category: "Car Accessories", brand: "WeatherTech", price: 94.12, stock: 96, avgRating: 4.10, reviewCount: 20, weightKg: 4.94, featured: false, active: true},
+  {productId: 2675, name: "Essential Charger", category: "Beds & Frames", brand: "Bosch", price: 60.45, stock: 260, avgRating: 4, reviewCount: 28, weightKg: 2.24, featured: false, active: true},
+  {productId: 2682, name: "Premium Sofa", category: "Garden & Outdoor", brand: "Sony", price: 16.34, stock: 392, avgRating: 4.30, reviewCount: 25, weightKg: 0.40, featured: false, active: true},
+  {productId: 2683, name: "Classic Bag", category: "Cameras", brand: "Sony", price: 17.71, stock: 307, avgRating: 3.90, reviewCount: 29, weightKg: 0.58, featured: false, active: true},
+  {productId: 2687, name: "Max Keyboard", category: "Medical Devices", brand: "Braun", price: 584.48, stock: 107, avgRating: 4.10, reviewCount: 30, weightKg: 0.39, featured: false, active: true},
+  {productId: 2692, name: "Essential Watch", category: "Fiction", brand: "HarperCollins", price: 76.13, stock: 225, avgRating: 4.30, reviewCount: 29, weightKg: 3.27, featured: false, active: true},
+  {productId: 2695, name: "Premium Case", category: "Action Cameras", brand: "Bosch", price: 452.98, stock: 470, avgRating: 4.30, reviewCount: 31, weightKg: 3.18, featured: false, active: true},
+  {productId: 2696, name: "Essential Watch", category: "Medical Devices", brand: "Fitbit", price: 174.02, stock: 439, avgRating: 4, reviewCount: 23, weightKg: 0.24, featured: false, active: true},
+  {productId: 2700, name: "Classic Bag", category: "4K TVs", brand: "Hisense", price: 16.92, stock: 35, avgRating: 4, reviewCount: 29, weightKg: 16.73, featured: false, active: true},
+  {productId: 2706, name: "Elite Sneaker", category: "Garden & Outdoor", brand: "Samsung", price: 426.15, stock: 391, avgRating: 3.90, reviewCount: 33, weightKg: 0.38, featured: false, active: true},
+  {productId: 2709, name: "Signature Headphone", category: "Soundbars", brand: "JBL", price: 1068.64, stock: 495, avgRating: 4.30, reviewCount: 32, weightKg: 2.16, featured: false, active: true},
+  {productId: 2710, name: "Premium Blender", category: "Protein & Supplements", brand: "Optimum Nutrition", price: 797.01, stock: 400, avgRating: 4, reviewCount: 25, weightKg: 1.18, featured: false, active: true},
+  {productId: 2721, name: "Ultra Bag", category: "Casual Shoes", brand: "Nike", price: 755.35, stock: 242, avgRating: 4.10, reviewCount: 38, weightKg: 0.37, featured: false, active: true},
+  {productId: 2723, name: "Flex Jacket", category: "Face Moisturizers", brand: "Olay", price: 9.06, stock: 276, avgRating: 4.30, reviewCount: 25, weightKg: 0.18, featured: false, active: true},
+  {productId: 2730, name: "Classic Blender", category: "Soundbars", brand: "Sonos", price: 237.13, stock: 288, avgRating: 3.80, reviewCount: 26, weightKg: 5.38, featured: false, active: true},
+  {productId: 2732, name: "Flex Sofa", category: "Treadmills", brand: "Horizon", price: 1443.44, stock: 355, avgRating: 4.20, reviewCount: 30, weightKg: 62.89, featured: false, active: true},
+  {productId: 2734, name: "Signature Jacket", category: "Beds & Frames", brand: "Philips", price: 10.70, stock: 28, avgRating: 3.90, reviewCount: 28, weightKg: 4.79, featured: false, active: true},
+  {productId: 2753, name: "Signature Lamp", category: "4K TVs", brand: "Sony", price: 17.05, stock: 208, avgRating: 4, reviewCount: 26, weightKg: 9.72, featured: false, active: false},
+  {productId: 2754, name: "Max Shoes", category: "Furniture", brand: "IKEA", price: 86.39, stock: 67, avgRating: 4.50, reviewCount: 35, weightKg: 54.60, featured: false, active: true},
+  {productId: 2769, name: "Flex Backpack", category: "Medical Devices", brand: "Philips", price: 22.92, stock: 190, avgRating: 4.10, reviewCount: 24, weightKg: 0.31, featured: false, active: true},
+  {productId: 2771, name: "Signature Camera", category: "Beds & Frames", brand: "Samsung", price: 1113.53, stock: 327, avgRating: 4.20, reviewCount: 34, weightKg: 4.38, featured: false, active: true},
+  {productId: 2774, name: "Pro Shoes", category: "Furniture", brand: "IKEA", price: 1704.91, stock: 54, avgRating: 4.20, reviewCount: 32, weightKg: 61.31, featured: false, active: true},
+  {productId: 2779, name: "Premium Headphone", category: "TV & Audio", brand: "JBL", price: 26.14, stock: 374, avgRating: 4, reviewCount: 33, weightKg: 4.94, featured: false, active: true},
+  {productId: 2785, name: "Essential Blender", category: "iPhone", brand: "Apple", price: 23, stock: 297, avgRating: 4.30, reviewCount: 32, weightKg: 1.58, featured: false, active: true},
+  {productId: 2790, name: "Eco Camera", category: "Kids' Clothing", brand: "Adidas", price: 64.31, stock: 263, avgRating: 4.30, reviewCount: 27, weightKg: 3.15, featured: false, active: true},
+  {productId: 2793, name: "Pro Pillow", category: "Casual Shoes", brand: "Vans", price: 544.53, stock: 335, avgRating: 3.90, reviewCount: 28, weightKg: 0.59, featured: true, active: true},
+  {productId: 2800, name: "Flex Mouse", category: "Action Cameras", brand: "Bosch", price: 7.62, stock: 264, avgRating: 4.10, reviewCount: 26, weightKg: 3.67, featured: false, active: true},
+  {productId: 2809, name: "Ultra Watch", category: "Skincare", brand: "CeraVe", price: 145.94, stock: 241, avgRating: 4.10, reviewCount: 31, weightKg: 0.08, featured: false, active: true},
+  {productId: 2812, name: "Eco Cover", category: "Kitchen & Dining", brand: "Ninja", price: 114.74, stock: 442, avgRating: 4.40, reviewCount: 26, weightKg: 1.43, featured: false, active: true},
+  {productId: 2818, name: "Elite Watch", category: "Beverages", brand: "PepsiCo", price: 199.97, stock: 465, avgRating: 4, reviewCount: 35, weightKg: 1.75, featured: false, active: true},
+  {productId: 2820, name: "Lite Sneaker", category: "iPhone", brand: "Apple", price: 1909.81, stock: 386, avgRating: 4.20, reviewCount: 41, weightKg: 3.56, featured: true, active: true},
+  {productId: 2827, name: "Essential Headphone", category: "Non-Fiction", brand: "Simon & Schuster", price: 37.18, stock: 333, avgRating: 4.10, reviewCount: 31, weightKg: 1.56, featured: false, active: true},
+  {productId: 2829, name: "Ultra Speaker", category: "Building Toys", brand: "LEGO", price: 23.51, stock: 328, avgRating: 4, reviewCount: 25, weightKg: 0.46, featured: false, active: true},
+  {productId: 2845, name: "Classic Mat", category: "Kids' Clothing", brand: "Adidas", price: 24.23, stock: 7, avgRating: 4.10, reviewCount: 33, weightKg: 4.67, featured: false, active: true},
+  {productId: 2851, name: "Lite Charger", category: "Women's Clothing", brand: "Nike", price: 178.88, stock: 69, avgRating: 3.90, reviewCount: 22, weightKg: 1.68, featured: false, active: true},
+  {productId: 2857, name: "Premium Sneaker", category: "Gaming Laptops", brand: "Dell", price: 24.16, stock: 316, avgRating: 4.10, reviewCount: 40, weightKg: 2.86, featured: false, active: true},
+  {productId: 2866, name: "Elite Shirt", category: "Beds & Frames", brand: "Samsung", price: 135.33, stock: 116, avgRating: 4.30, reviewCount: 31, weightKg: 3.43, featured: false, active: true},
+  {productId: 2867, name: "Flex Stand", category: "Casual Shoes", brand: "Adidas", price: 799.81, stock: 44, avgRating: 3.90, reviewCount: 32, weightKg: 0.59, featured: false, active: false},
+  {productId: 2869, name: "Classic Shoes", category: "Snacks & Candy", brand: "Haribo", price: 706.71, stock: 305, avgRating: 4.30, reviewCount: 27, weightKg: 0.20, featured: false, active: true},
+  {productId: 2870, name: "Advanced Sneaker", category: "Exercise & Fitness", brand: "Bowflex", price: 27.05, stock: 88, avgRating: 3.90, reviewCount: 42, weightKg: 19.45, featured: false, active: false},
+  {productId: 2873, name: "Pro Cover", category: "Running Shoes", brand: "New Balance", price: 1963.68, stock: 431, avgRating: 4.10, reviewCount: 34, weightKg: 0.35, featured: true, active: true},
+  {productId: 2877, name: "Elite Keyboard", category: "Team Sports", brand: "Adidas", price: 272.23, stock: 177, avgRating: 4.20, reviewCount: 29, weightKg: 1.58, featured: false, active: true},
+  {productId: 2883, name: "Advanced Blender", category: "Exercise & Fitness", brand: "NordicTrack", price: 236.42, stock: 402, avgRating: 4, reviewCount: 29, weightKg: 12.18, featured: false, active: true},
+  {productId: 2884, name: "Max Speaker", category: "Protein & Supplements", brand: "BSN", price: 1965.82, stock: 195, avgRating: 4, reviewCount: 38, weightKg: 2.91, featured: false, active: true},
+  {productId: 2892, name: "Smart Mat", category: "Face Moisturizers", brand: "La Roche-Posay", price: 153.76, stock: 75, avgRating: 4.20, reviewCount: 29, weightKg: 0.07, featured: true, active: true},
+  {productId: 2896, name: "Pro Pants", category: "Exercise & Fitness", brand: "Rogue", price: 243.40, stock: 107, avgRating: 4.20, reviewCount: 28, weightKg: 13.01, featured: false, active: true},
+  {productId: 2898, name: "Ultra Headphone", category: "Action Figures", brand: "Mattel", price: 99.38, stock: 71, avgRating: 4.20, reviewCount: 26, weightKg: 4.21, featured: false, active: true},
+  {productId: 2903, name: "Elite Case", category: "Fiction", brand: "Random House", price: 23.46, stock: 163, avgRating: 4.40, reviewCount: 27, weightKg: 2.51, featured: false, active: true},
+  {productId: 2911, name: "Classic Jacket", category: "Running Shoes", brand: "Nike", price: 637.16, stock: 464, avgRating: 4.20, reviewCount: 26, weightKg: 0.43, featured: false, active: true},
+  {productId: 2912, name: "Premium Blender", category: "Team Sports", brand: "Adidas", price: 1475.82, stock: 249, avgRating: 3.90, reviewCount: 20, weightKg: 2.56, featured: true, active: true},
+  {productId: 2917, name: "Elite Keyboard", category: "Beds & Frames", brand: "Sony", price: 6, stock: 210, avgRating: 3.80, reviewCount: 28, weightKg: 1.79, featured: false, active: true},
+  {productId: 2918, name: "Signature Sneaker", category: "Fiction", brand: "Random House", price: 308.25, stock: 358, avgRating: 4, reviewCount: 31, weightKg: 3.52, featured: false, active: true},
+  {productId: 2924, name: "Pro Sofa", category: "Action Cameras", brand: "Philips", price: 464.10, stock: 404, avgRating: 4.40, reviewCount: 22, weightKg: 2.64, featured: false, active: true},
+  {productId: 2931, name: "Deluxe Case", category: "Furniture", brand: "Wayfair", price: 351.25, stock: 192, avgRating: 4.10, reviewCount: 38, weightKg: 15.40, featured: false, active: true},
+  {productId: 2932, name: "Flex Keyboard", category: "Yoga & Pilates", brand: "Liforme", price: 1962.40, stock: 216, avgRating: 4.50, reviewCount: 26, weightKg: 2.34, featured: false, active: true},
+  {productId: 2939, name: "Essential Charger", category: "Kids' Clothing", brand: "Nike", price: 719.97, stock: 450, avgRating: 4.10, reviewCount: 24, weightKg: 0.34, featured: false, active: true},
+  {productId: 2952, name: "Advanced Cover", category: "Medical Devices", brand: "Fitbit", price: 194.23, stock: 442, avgRating: 4, reviewCount: 32, weightKg: 0.30, featured: false, active: true},
+  {productId: 2964, name: "Lite Blender", category: "Skincare", brand: "Estee Lauder", price: 19.50, stock: 152, avgRating: 4.30, reviewCount: 31, weightKg: 0.08, featured: false, active: true},
+  {productId: 2966, name: "Classic Pillow", category: "Laptops & Computers", brand: "Apple", price: 1432.54, stock: 145, avgRating: 3.80, reviewCount: 27, weightKg: 2.64, featured: false, active: true},
+  {productId: 2968, name: "Lite Camera", category: "Beds & Frames", brand: "LG", price: 27.33, stock: 338, avgRating: 4, reviewCount: 21, weightKg: 3.56, featured: false, active: true},
+  {productId: 2970, name: "Advanced Mouse", category: "Board Games", brand: "Mattel", price: 58.23, stock: 117, avgRating: 4.20, reviewCount: 29, weightKg: 0.33, featured: false, active: true},
+  {productId: 2974, name: "Ultra Watch", category: "Sofas & Couches", brand: "IKEA", price: 1138.33, stock: 88, avgRating: 4.10, reviewCount: 22, weightKg: 103.87, featured: false, active: false},
+  {productId: 2979, name: "Max Case", category: "Soundbars", brand: "JBL", price: 119.53, stock: 493, avgRating: 4.20, reviewCount: 32, weightKg: 2.39, featured: false, active: true},
+  {productId: 2985, name: "Essential Shoes", category: "Yoga & Pilates", brand: "Lululemon", price: 658.81, stock: 467, avgRating: 4.10, reviewCount: 24, weightKg: 1.71, featured: false, active: true},
+  {productId: 2989, name: "Elite Charger", category: "Men's Clothing", brand: "Levi's", price: 1276.77, stock: 237, avgRating: 4.20, reviewCount: 30, weightKg: 2.81, featured: true, active: true},
+  {productId: 2992, name: "Max Headphone", category: "Protein & Supplements", brand: "BSN", price: 97.04, stock: 49, avgRating: 4.50, reviewCount: 28, weightKg: 1.91, featured: false, active: true},
+  {productId: 2996, name: "Classic Mat", category: "Car Accessories", brand: "WeatherTech", price: 52.71, stock: 180, avgRating: 4.30, reviewCount: 29, weightKg: 1.49, featured: false, active: true},
+  {productId: 2997, name: "Essential Keyboard", category: "Snacks & Candy", brand: "Oreo", price: 1667.09, stock: 324, avgRating: 4.20, reviewCount: 27, weightKg: 0.11, featured: false, active: true},
+  {productId: 2999, name: "Max Keyboard", category: "Women's Clothing", brand: "H&M", price: 1920.54, stock: 389, avgRating: 3.70, reviewCount: 29, weightKg: 0.72, featured: false, active: true}
+] AS row
+MERGE (p:Product {productId: row.productId})
+SET   p.name = row.name, p.category = row.category, p.brand = row.brand,
+      p.price = row.price, p.stock = row.stock, p.avgRating = row.avgRating,
+      p.reviewCount = row.reviewCount, p.weightKg = row.weightKg,
+      p.featured = row.featured, p.active = row.active
+RETURN count(p) AS productsLoaded;
+
+// --> 186
+
+
+// ---------------------------------------------------------------- 3.14
+// Link products to their category, matching on the category NAME.
+
+MATCH (p:Product)
+MATCH (c:Category {name: p.category})
+MERGE (p)-[:IN_CATEGORY]->(c)
+RETURN count(*) AS productCategoryLinks;
+
+// --> 186
+
+
+// ---------------------------------------------------------------- 3.15
+// Customers (24 nodes).
+
+UNWIND [
+  {customerId: 1059, firstName: "Susan", lastName: "White", email: "evanscorey@example.org", city: "East Kathrynberg", state: "ME", country: "USA", segment: "VIP", channel: "Affiliate", loyaltyPoints: 17064, lifetimeOrders: 7, lifetimeRevenue: 15991.20, newsletter: true, joined: datetime("2022-11-08T15:02:00")},
+  {customerId: 1716, firstName: "Alex", lastName: "Cortez", email: "cassiesmith@example.org", city: "Ramosstad", state: "AS", country: "USA", segment: "VIP", channel: "Social Media", loyaltyPoints: 30388, lifetimeOrders: 9, lifetimeRevenue: 28477.73, newsletter: true, joined: datetime("2022-12-14T21:24:00")},
+  {customerId: 2438, firstName: "Tammy", lastName: "Silva", email: "tony37@example.org", city: "East Christopher", state: "CA", country: "USA", segment: "VIP", channel: "Direct", loyaltyPoints: 21228, lifetimeOrders: 9, lifetimeRevenue: 19893.86, newsletter: true, joined: datetime("2022-05-30T09:42:00")},
+  {customerId: 3068, firstName: "Carol", lastName: "Glass", email: "nicholas73@example.com", city: "North Royport", state: "NY", country: "USA", segment: "VIP", channel: "Paid Search", loyaltyPoints: 30065, lifetimeOrders: 7, lifetimeRevenue: 28174.38, newsletter: true, joined: datetime("2024-07-02T19:22:00")},
+  {customerId: 3148, firstName: "Eric", lastName: "Ellis", email: "danielhamilton@example.net", city: "Butlerfort", state: "DE", country: "USA", segment: "VIP", channel: "Organic Search", loyaltyPoints: 12894, lifetimeOrders: 7, lifetimeRevenue: 12083.19, newsletter: true, joined: datetime("2023-12-05T17:49:00")},
+  {customerId: 3160, firstName: "Marissa", lastName: "Stone", email: "nking@example.com", city: "Wilsonmouth", state: "PR", country: "USA", segment: "VIP", channel: "Organic Search", loyaltyPoints: 31573, lifetimeOrders: 6, lifetimeRevenue: 29587.36, newsletter: false, joined: datetime("2022-06-07T08:16:00")},
+  {customerId: 4086, firstName: "Austin", lastName: "Whitney", email: "hooverjason@example.org", city: "Port Joshua", state: "OH", country: "USA", segment: "VIP", channel: "Referral", loyaltyPoints: 22470, lifetimeOrders: 9, lifetimeRevenue: 21057.23, newsletter: true, joined: datetime("2024-06-03T02:06:00")},
+  {customerId: 4254, firstName: "Shannon", lastName: "Clements", email: "johnsonkimberly@example.net", city: "North Danny", state: "NJ", country: "USA", segment: "VIP", channel: "Referral", loyaltyPoints: 45843, lifetimeOrders: 11, lifetimeRevenue: 42960.29, newsletter: true, joined: datetime("2022-03-31T07:56:00")},
+  {customerId: 4599, firstName: "Catherine", lastName: "Shaw", email: "shirley24@example.net", city: "West Tyler", state: "FM", country: "USA", segment: "Churned", channel: "Organic Search", loyaltyPoints: 5013, lifetimeOrders: 2, lifetimeRevenue: 4698.50, newsletter: false, joined: datetime("2023-04-14T09:40:00")},
+  {customerId: 4621, firstName: "Marcus", lastName: "Wright", email: "annarogers@example.org", city: "Robertton", state: "CO", country: "USA", segment: "VIP", channel: "Paid Search", loyaltyPoints: 12194, lifetimeOrders: 8, lifetimeRevenue: 11427.18, newsletter: true, joined: datetime("2024-02-16T05:23:00")},
+  {customerId: 5399, firstName: "Hunter", lastName: "Juarez", email: "fisherrachael@example.com", city: "Juanfort", state: "GU", country: "USA", segment: "New", channel: "App Store", loyaltyPoints: 947, lifetimeOrders: 2, lifetimeRevenue: 887.72, newsletter: false, joined: datetime("2024-10-18T01:17:00")},
+  {customerId: 6170, firstName: "Michelle", lastName: "Sanchez", email: "mayoyvonne@example.org", city: "Lake Erica", state: "MP", country: "USA", segment: "VIP", channel: "Social Media", loyaltyPoints: 9312, lifetimeOrders: 5, lifetimeRevenue: 8726.40, newsletter: false, joined: datetime("2023-05-25T05:36:00")},
+  {customerId: 6482, firstName: "Michael", lastName: "Robinson", email: "hallrandy@example.com", city: "New Samantha", state: "VA", country: "USA", segment: "VIP", channel: "Organic Search", loyaltyPoints: 28278, lifetimeOrders: 8, lifetimeRevenue: 26499.97, newsletter: true, joined: datetime("2024-10-28T06:49:00")},
+  {customerId: 7569, firstName: "Jessica", lastName: "Johnson", email: "laurie62@example.org", city: "Port Jessica", state: "PW", country: "USA", segment: "VIP", channel: "Email Campaign", loyaltyPoints: 30337, lifetimeOrders: 7, lifetimeRevenue: 28429.79, newsletter: true, joined: datetime("2022-02-17T21:05:00")},
+  {customerId: 7590, firstName: "Janet", lastName: "Rogers", email: "xreyes@example.org", city: "Tuckerton", state: "IA", country: "USA", segment: "VIP", channel: "Organic Search", loyaltyPoints: 29248, lifetimeOrders: 7, lifetimeRevenue: 27408.82, newsletter: true, joined: datetime("2022-09-11T17:03:00")},
+  {customerId: 7716, firstName: "William", lastName: "Harris", email: "ugardner@example.net", city: "Port Jennifershire", state: "UT", country: "USA", segment: "VIP", channel: "Paid Search", loyaltyPoints: 7650, lifetimeOrders: 6, lifetimeRevenue: 7169.49, newsletter: true, joined: datetime("2024-03-03T16:12:00")},
+  {customerId: 7936, firstName: "Danielle", lastName: "Robinson", email: "carolynmurphy@example.org", city: "Port Ashley", state: "ND", country: "USA", segment: "VIP", channel: "Organic Search", loyaltyPoints: 18945, lifetimeOrders: 7, lifetimeRevenue: 17754.29, newsletter: true, joined: datetime("2024-04-26T04:47:00")},
+  {customerId: 8150, firstName: "Pedro", lastName: "Walker", email: "brian10@example.com", city: "Robinsonville", state: "NM", country: "USA", segment: "VIP", channel: "Affiliate", loyaltyPoints: 22094, lifetimeOrders: 7, lifetimeRevenue: 20704.50, newsletter: true, joined: datetime("2023-09-02T20:53:00")},
+  {customerId: 8310, firstName: "Jason", lastName: "Shaffer", email: "jesus83@example.org", city: "West Nathanview", state: "HI", country: "USA", segment: "VIP", channel: "Email Campaign", loyaltyPoints: 27116, lifetimeOrders: 7, lifetimeRevenue: 25411.18, newsletter: true, joined: datetime("2024-05-07T10:44:00")},
+  {customerId: 9239, firstName: "Sean", lastName: "Dennis", email: "john94@example.com", city: "Guerraland", state: "WY", country: "USA", segment: "VIP", channel: "Organic Search", loyaltyPoints: 15028, lifetimeOrders: 6, lifetimeRevenue: 14083.07, newsletter: true, joined: datetime("2024-12-20T07:35:00")},
+  {customerId: 9277, firstName: "Sergio", lastName: "James", email: "joshuameyer@example.com", city: "Mullinsville", state: "DC", country: "USA", segment: "New", channel: "Organic Search", loyaltyPoints: 915, lifetimeOrders: 2, lifetimeRevenue: 857.79, newsletter: false, joined: datetime("2024-10-27T22:07:00")},
+  {customerId: 10190, firstName: "Amy", lastName: "Morton", email: "lauren89@example.com", city: "South James", state: "IA", country: "USA", segment: "At-Risk", channel: "Organic Search", loyaltyPoints: 4783, lifetimeOrders: 1, lifetimeRevenue: 4482.57, newsletter: true, joined: datetime("2023-05-19T11:48:00")},
+  {customerId: 10470, firstName: "Matthew", lastName: "Cantu", email: "stanley96@example.com", city: "Danielport", state: "MT", country: "USA", segment: "At-Risk", channel: "Social Media", loyaltyPoints: 5239, lifetimeOrders: 2, lifetimeRevenue: 4910.27, newsletter: true, joined: datetime("2024-01-28T12:34:00")},
+  {customerId: 10921, firstName: "Taylor", lastName: "Wolf", email: "amberpalmer@example.org", city: "North Ashley", state: "GU", country: "USA", segment: "Churned", channel: "Email Campaign", loyaltyPoints: 5098, lifetimeOrders: 3, lifetimeRevenue: 4777.74, newsletter: false, joined: datetime("2022-07-21T16:49:00")}
+] AS row
+MERGE (c:Customer {customerId: row.customerId})
+SET   c.firstName = row.firstName, c.lastName = row.lastName,
+      c.name = row.firstName + " " + row.lastName,
+      c.email = row.email, c.city = row.city, c.state = row.state,
+      c.country = row.country, c.segment = row.segment, c.channel = row.channel,
+      c.loyaltyPoints = row.loyaltyPoints, c.lifetimeOrders = row.lifetimeOrders,
+      c.lifetimeRevenue = row.lifetimeRevenue, c.newsletter = row.newsletter,
+      c.joined = row.joined
+RETURN count(c) AS customersLoaded;
+
+// --> 24
+
+
+// ---------------------------------------------------------------- 3.16
+// Orders (66 nodes) and the PLACED relationship, in one pass.
+
+UNWIND [
+  {orderId: 4006, customerId: 9239, orderDate: datetime("2024-12-04T19:16:00"), totalAmount: 469.81, status: "Cancelled", paymentMethod: "Bank Transfer", shippingCity: "Bergermouth", shippingState: "VT", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 4146, customerId: 8310, orderDate: datetime("2023-10-22T09:25:00"), totalAmount: 827.59, status: "Delivered", paymentMethod: "Google Pay", shippingCity: "Lake Jeffport", shippingState: "OK", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 4347, customerId: 5399, orderDate: datetime("2024-10-08T20:55:00"), totalAmount: 204.22, status: "Delivered", paymentMethod: "Debit Card", shippingCity: "Kyleburgh", shippingState: "ND", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 5281, customerId: 4621, orderDate: datetime("2024-03-17T13:16:00"), totalAmount: 1131.56, status: "Shipped", paymentMethod: "PayPal", shippingCity: "Batesfurt", shippingState: "NE", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 5742, customerId: 3160, orderDate: datetime("2024-12-05T18:56:00"), totalAmount: 5416.80, status: "Delivered", paymentMethod: "Credit Card", shippingCity: "South Nicholas", shippingState: "PA", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 6752, customerId: 3068, orderDate: datetime("2024-02-25T07:39:00"), totalAmount: 6580.24, status: "Delivered", paymentMethod: "Debit Card", shippingCity: "South Jamesborough", shippingState: "GU", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 7005, customerId: 3160, orderDate: datetime("2024-05-20T09:46:00"), totalAmount: 8901.90, status: "Delivered", paymentMethod: "Apple Pay", shippingCity: "Alexborough", shippingState: "PW", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 8674, customerId: 9277, orderDate: datetime("2023-06-14T15:31:00"), totalAmount: 153.03, status: "Shipped", paymentMethod: "Google Pay", shippingCity: "Morrisonmouth", shippingState: "DC", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 9344, customerId: 7716, orderDate: datetime("2024-12-25T14:53:00"), totalAmount: 573.28, status: "Processing", paymentMethod: "Debit Card", shippingCity: "Gomezhaven", shippingState: "TX", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 9455, customerId: 9239, orderDate: datetime("2024-09-11T15:37:00"), totalAmount: 5979.95, status: "Returned", paymentMethod: "Credit Card", shippingCity: "Kennethhaven", shippingState: "MN", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 9589, customerId: 7936, orderDate: datetime("2023-07-25T15:26:00"), totalAmount: 566.17, status: "Delivered", paymentMethod: "PayPal", shippingCity: "East Amyborough", shippingState: "MO", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 9804, customerId: 4254, orderDate: datetime("2023-03-21T14:28:00"), totalAmount: 354.49, status: "Delivered", paymentMethod: "Bank Transfer", shippingCity: "New Christopherchester", shippingState: "VA", deviceType: "tablet", shippingCost: 0, isGift: false},
+  {orderId: 10001, customerId: 9239, orderDate: datetime("2024-07-18T22:29:00"), totalAmount: 5649.73, status: "Cancelled", paymentMethod: "Debit Card", shippingCity: "Karenfurt", shippingState: "MS", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 10524, customerId: 10921, orderDate: datetime("2023-06-03T08:06:00"), totalAmount: 324.96, status: "Cancelled", paymentMethod: "PayPal", shippingCity: "West Lisafurt", shippingState: "NH", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 11326, customerId: 4621, orderDate: datetime("2024-09-09T22:49:00"), totalAmount: 2139.87, status: "Delivered", paymentMethod: "PayPal", shippingCity: "Scottview", shippingState: "VI", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 12443, customerId: 4254, orderDate: datetime("2023-10-21T14:39:00"), totalAmount: 8814.57, status: "Cancelled", paymentMethod: "Credit Card", shippingCity: "West Adam", shippingState: "MI", deviceType: "desktop", shippingCost: 0, isGift: true},
+  {orderId: 13926, customerId: 8150, orderDate: datetime("2024-12-26T10:49:00"), totalAmount: 7443.35, status: "Shipped", paymentMethod: "Bank Transfer", shippingCity: "Roberthaven", shippingState: "AS", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 13990, customerId: 3148, orderDate: datetime("2024-06-11T18:48:00"), totalAmount: 2030.50, status: "Delivered", paymentMethod: "Bank Transfer", shippingCity: "North Howard", shippingState: "MH", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 14250, customerId: 7716, orderDate: datetime("2024-09-25T11:16:00"), totalAmount: 483.48, status: "Returned", paymentMethod: "PayPal", shippingCity: "North Matthew", shippingState: "PR", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 14981, customerId: 3148, orderDate: datetime("2024-01-10T18:14:00"), totalAmount: 552.99, status: "Returned", paymentMethod: "Debit Card", shippingCity: "New Ritaport", shippingState: "MT", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 15445, customerId: 3160, orderDate: datetime("2023-02-01T13:43:00"), totalAmount: 7711.21, status: "Delivered", paymentMethod: "Apple Pay", shippingCity: "Pettyhaven", shippingState: "HI", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 15714, customerId: 5399, orderDate: datetime("2024-09-21T09:09:00"), totalAmount: 683.50, status: "Delivered", paymentMethod: "PayPal", shippingCity: "Graceport", shippingState: "KS", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 16468, customerId: 6482, orderDate: datetime("2023-10-08T13:39:00"), totalAmount: 3181.86, status: "Shipped", paymentMethod: "Credit Card", shippingCity: "Lake Richard", shippingState: "AS", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 16710, customerId: 1059, orderDate: datetime("2023-09-15T15:37:00"), totalAmount: 2363.84, status: "Processing", paymentMethod: "Bank Transfer", shippingCity: "Port Cynthiaville", shippingState: "NE", deviceType: "desktop", shippingCost: 0, isGift: true},
+  {orderId: 16801, customerId: 6482, orderDate: datetime("2024-10-28T19:17:00"), totalAmount: 7267.10, status: "Shipped", paymentMethod: "Credit Card", shippingCity: "Lopezstad", shippingState: "CA", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 16826, customerId: 3068, orderDate: datetime("2023-10-24T22:48:00"), totalAmount: 1844.89, status: "Returned", paymentMethod: "PayPal", shippingCity: "Mistyshire", shippingState: "KY", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 18956, customerId: 7936, orderDate: datetime("2023-10-02T18:27:00"), totalAmount: 516.42, status: "Shipped", paymentMethod: "Credit Card", shippingCity: "Wilsonview", shippingState: "MP", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 19173, customerId: 2438, orderDate: datetime("2024-09-02T13:13:00"), totalAmount: 3462.98, status: "Processing", paymentMethod: "Credit Card", shippingCity: "Lake Laura", shippingState: "UT", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 19564, customerId: 7569, orderDate: datetime("2024-09-06T08:14:00"), totalAmount: 1184.98, status: "Shipped", paymentMethod: "Google Pay", shippingCity: "Jonesbury", shippingState: "CT", deviceType: "mobile", shippingCost: 0, isGift: true},
+  {orderId: 19761, customerId: 1716, orderDate: datetime("2024-05-18T18:49:00"), totalAmount: 1533.22, status: "Delivered", paymentMethod: "PayPal", shippingCity: "North Michael", shippingState: "OH", deviceType: "tablet", shippingCost: 0, isGift: false},
+  {orderId: 20553, customerId: 4254, orderDate: datetime("2023-05-21T22:11:00"), totalAmount: 102.44, status: "Returned", paymentMethod: "PayPal", shippingCity: "Jamieton", shippingState: "WI", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 24702, customerId: 10470, orderDate: datetime("2023-09-07T10:34:00"), totalAmount: 4396.39, status: "Delivered", paymentMethod: "Debit Card", shippingCity: "North Raymondview", shippingState: "CO", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 24878, customerId: 3148, orderDate: datetime("2024-11-02T12:17:00"), totalAmount: 4983.21, status: "Shipped", paymentMethod: "Debit Card", shippingCity: "Scotttown", shippingState: "ID", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 25963, customerId: 10921, orderDate: datetime("2023-01-03T16:44:00"), totalAmount: 16.86, status: "Delivered", paymentMethod: "Google Pay", shippingCity: "Kevinstad", shippingState: "NJ", deviceType: "desktop", shippingCost: 13.72, isGift: false},
+  {orderId: 26430, customerId: 1059, orderDate: datetime("2023-10-27T07:36:00"), totalAmount: 2491.80, status: "Delivered", paymentMethod: "Credit Card", shippingCity: "North Robertberg", shippingState: "WV", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 26897, customerId: 2438, orderDate: datetime("2023-03-06T18:45:00"), totalAmount: 5006.17, status: "Shipped", paymentMethod: "Credit Card", shippingCity: "Robertsland", shippingState: "MN", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 28373, customerId: 6482, orderDate: datetime("2024-06-08T17:13:00"), totalAmount: 939.17, status: "Cancelled", paymentMethod: "PayPal", shippingCity: "New Ronald", shippingState: "GU", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 28892, customerId: 4621, orderDate: datetime("2024-11-28T21:42:00"), totalAmount: 5595.52, status: "Cancelled", paymentMethod: "Apple Pay", shippingCity: "Port Michaelport", shippingState: "PA", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 29763, customerId: 7569, orderDate: datetime("2023-08-01T16:59:00"), totalAmount: 13502.87, status: "Shipped", paymentMethod: "Google Pay", shippingCity: "East Jonathan", shippingState: "AR", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 30107, customerId: 1716, orderDate: datetime("2023-08-14T16:47:00"), totalAmount: 380.57, status: "Delivered", paymentMethod: "Debit Card", shippingCity: "Lake Joseland", shippingState: "WA", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 31179, customerId: 6170, orderDate: datetime("2024-09-21T21:09:00"), totalAmount: 457.82, status: "Shipped", paymentMethod: "PayPal", shippingCity: "East Johnshire", shippingState: "OR", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 32023, customerId: 7590, orderDate: datetime("2023-10-26T16:01:00"), totalAmount: 7274.08, status: "Delivered", paymentMethod: "Debit Card", shippingCity: "North Timothy", shippingState: "MH", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 33064, customerId: 4599, orderDate: datetime("2023-11-19T14:02:00"), totalAmount: 281.13, status: "Delivered", paymentMethod: "Credit Card", shippingCity: "Randytown", shippingState: "GU", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 33769, customerId: 9277, orderDate: datetime("2024-09-14T09:39:00"), totalAmount: 704.76, status: "Returned", paymentMethod: "Debit Card", shippingCity: "Colemanbury", shippingState: "CT", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 34239, customerId: 3068, orderDate: datetime("2023-11-27T08:56:00"), totalAmount: 3591.78, status: "Cancelled", paymentMethod: "Credit Card", shippingCity: "New Randymouth", shippingState: "MA", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 34804, customerId: 8150, orderDate: datetime("2024-05-08T11:15:00"), totalAmount: 5055.70, status: "Returned", paymentMethod: "Credit Card", shippingCity: "Bakerborough", shippingState: "MH", deviceType: "mobile", shippingCost: 0, isGift: true},
+  {orderId: 37486, customerId: 4086, orderDate: datetime("2023-12-04T20:59:00"), totalAmount: 1502.99, status: "Delivered", paymentMethod: "Debit Card", shippingCity: "Myersstad", shippingState: "AK", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 37673, customerId: 7716, orderDate: datetime("2023-07-26T22:14:00"), totalAmount: 2875.14, status: "Cancelled", paymentMethod: "Bank Transfer", shippingCity: "South Tracyshire", shippingState: "AR", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 37803, customerId: 6170, orderDate: datetime("2024-09-25T13:13:00"), totalAmount: 2265.01, status: "Shipped", paymentMethod: "PayPal", shippingCity: "West Deborah", shippingState: "MN", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 40051, customerId: 8310, orderDate: datetime("2023-04-09T08:47:00"), totalAmount: 4406.34, status: "Shipped", paymentMethod: "Credit Card", shippingCity: "Juarezfort", shippingState: "WI", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 42805, customerId: 10470, orderDate: datetime("2023-10-28T21:39:00"), totalAmount: 513.88, status: "Delivered", paymentMethod: "Credit Card", shippingCity: "Port Catherineview", shippingState: "ID", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 43138, customerId: 8150, orderDate: datetime("2024-11-11T09:50:00"), totalAmount: 3837.44, status: "Delivered", paymentMethod: "Credit Card", shippingCity: "Andersonborough", shippingState: "MD", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 43784, customerId: 7936, orderDate: datetime("2024-12-26T09:24:00"), totalAmount: 6219.12, status: "Returned", paymentMethod: "Bank Transfer", shippingCity: "Port Kristinton", shippingState: "NV", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 43912, customerId: 4086, orderDate: datetime("2023-09-21T15:09:00"), totalAmount: 5195.72, status: "Shipped", paymentMethod: "Credit Card", shippingCity: "Shaneview", shippingState: "PW", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 43995, customerId: 2438, orderDate: datetime("2024-07-06T08:24:00"), totalAmount: 5327.72, status: "Shipped", paymentMethod: "Debit Card", shippingCity: "Lake Christinaborough", shippingState: "NJ", deviceType: "mobile", shippingCost: 0, isGift: true},
+  {orderId: 44434, customerId: 7590, orderDate: datetime("2024-11-28T10:01:00"), totalAmount: 5697.16, status: "Shipped", paymentMethod: "Debit Card", shippingCity: "West Erictown", shippingState: "WA", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 45238, customerId: 10921, orderDate: datetime("2023-01-03T11:09:00"), totalAmount: 4435.92, status: "Shipped", paymentMethod: "PayPal", shippingCity: "Joshuaview", shippingState: "PA", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 48110, customerId: 1716, orderDate: datetime("2024-11-04T22:40:00"), totalAmount: 202.97, status: "Cancelled", paymentMethod: "Apple Pay", shippingCity: "South Peggyfurt", shippingState: "MP", deviceType: "tablet", shippingCost: 0, isGift: true},
+  {orderId: 48505, customerId: 4599, orderDate: datetime("2023-08-26T10:46:00"), totalAmount: 4417.37, status: "Delivered", paymentMethod: "Credit Card", shippingCity: "Richardberg", shippingState: "GU", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 48558, customerId: 10190, orderDate: datetime("2023-03-05T21:55:00"), totalAmount: 4482.57, status: "Shipped", paymentMethod: "Credit Card", shippingCity: "South Michaelmouth", shippingState: "ND", deviceType: "tablet", shippingCost: 0, isGift: false},
+  {orderId: 48867, customerId: 7590, orderDate: datetime("2024-03-17T22:55:00"), totalAmount: 5065.71, status: "Delivered", paymentMethod: "Credit Card", shippingCity: "West Ariel", shippingState: "KS", deviceType: "desktop", shippingCost: 0, isGift: true},
+  {orderId: 49416, customerId: 7569, orderDate: datetime("2023-12-24T18:50:00"), totalAmount: 9650.69, status: "Delivered", paymentMethod: "PayPal", shippingCity: "Millerview", shippingState: "PW", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 50560, customerId: 6170, orderDate: datetime("2024-04-01T09:31:00"), totalAmount: 4522.70, status: "Processing", paymentMethod: "PayPal", shippingCity: "Shannonland", shippingState: "PW", deviceType: "desktop", shippingCost: 0, isGift: false},
+  {orderId: 50905, customerId: 8310, orderDate: datetime("2024-05-13T18:02:00"), totalAmount: 748.25, status: "Returned", paymentMethod: "Debit Card", shippingCity: "South Tanya", shippingState: "AL", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 51214, customerId: 1059, orderDate: datetime("2023-09-02T17:17:00"), totalAmount: 8369.28, status: "Delivered", paymentMethod: "Credit Card", shippingCity: "West Loretta", shippingState: "CA", deviceType: "mobile", shippingCost: 0, isGift: false},
+  {orderId: 52036, customerId: 4086, orderDate: datetime("2023-11-05T16:29:00"), totalAmount: 5343.08, status: "Shipped", paymentMethod: "Credit Card", shippingCity: "North Reneechester", shippingState: "UT", deviceType: "desktop", shippingCost: 0, isGift: true}
+] AS row
+MERGE (o:Order {orderId: row.orderId})
+SET   o.orderDate = row.orderDate, o.totalAmount = row.totalAmount,
+      o.status = row.status, o.paymentMethod = row.paymentMethod,
+      o.shippingCity = row.shippingCity, o.shippingState = row.shippingState,
+      o.deviceType = row.deviceType, o.shippingCost = row.shippingCost,
+      o.isGift = row.isGift
+WITH o, row
+MATCH (c:Customer {customerId: row.customerId})
+MERGE (c)-[:PLACED]->(o)
+RETURN count(o) AS ordersLoaded;
+
+// --> 66
+//     WITH passes results from one part of a query to the next. More on it later.
+
+
+// ---------------------------------------------------------------- 3.17
+// Order lines: the CONTAINS relationship (229 relationships).
+// quantity, unitPrice and totalPrice live ON THE RELATIONSHIP, because they
+// describe this product IN THIS ORDER — not the product in general.
+
+UNWIND [
+  {orderId: 4006, productId: 2335, quantity: 1, unitPrice: 421.45, totalPrice: 421.45},
+  {orderId: 4006, productId: 2586, quantity: 4, unitPrice: 12.09, totalPrice: 48.36},
+  {orderId: 4146, productId: 2131, quantity: 1, unitPrice: 18.57, totalPrice: 18.57},
+  {orderId: 4146, productId: 2232, quantity: 3, unitPrice: 5.77, totalPrice: 17.31},
+  {orderId: 4146, productId: 2295, quantity: 3, unitPrice: 4.85, totalPrice: 14.55},
+  {orderId: 4146, productId: 2867, quantity: 1, unitPrice: 777.16, totalPrice: 777.16},
+  {orderId: 4347, productId: 2468, quantity: 4, unitPrice: 32.11, totalPrice: 128.44},
+  {orderId: 4347, productId: 2692, quantity: 1, unitPrice: 75.78, totalPrice: 75.78},
+  {orderId: 5281, productId: 2026, quantity: 4, unitPrice: 5.90, totalPrice: 23.60},
+  {orderId: 5281, productId: 2310, quantity: 3, unitPrice: 369.32, totalPrice: 1107.96},
+  {orderId: 5742, productId: 2119, quantity: 2, unitPrice: 1010.69, totalPrice: 2021.38},
+  {orderId: 5742, productId: 2820, quantity: 2, unitPrice: 1697.71, totalPrice: 3395.42},
+  {orderId: 6752, productId: 2186, quantity: 4, unitPrice: 594.94, totalPrice: 2379.76},
+  {orderId: 6752, productId: 2481, quantity: 2, unitPrice: 121.81, totalPrice: 243.62},
+  {orderId: 6752, productId: 2769, quantity: 4, unitPrice: 21.51, totalPrice: 86.04},
+  {orderId: 6752, productId: 2898, quantity: 2, unitPrice: 94.25, totalPrice: 188.50},
+  {orderId: 6752, productId: 2999, quantity: 2, unitPrice: 1841.16, totalPrice: 3682.32},
+  {orderId: 7005, productId: 2039, quantity: 4, unitPrice: 1585.31, totalPrice: 6341.24},
+  {orderId: 7005, productId: 2284, quantity: 1, unitPrice: 38.56, totalPrice: 38.56},
+  {orderId: 7005, productId: 2732, quantity: 2, unitPrice: 1261.05, totalPrice: 2522.10},
+  {orderId: 8674, productId: 2573, quantity: 3, unitPrice: 51.01, totalPrice: 153.03},
+  {orderId: 9344, productId: 2085, quantity: 1, unitPrice: 215.79, totalPrice: 215.79},
+  {orderId: 9344, productId: 2208, quantity: 1, unitPrice: 12.70, totalPrice: 12.70},
+  {orderId: 9344, productId: 2398, quantity: 2, unitPrice: 56.36, totalPrice: 112.72},
+  {orderId: 9344, productId: 2620, quantity: 3, unitPrice: 23.99, totalPrice: 71.97},
+  {orderId: 9344, productId: 2672, quantity: 2, unitPrice: 80.05, totalPrice: 160.10},
+  {orderId: 9455, productId: 2051, quantity: 2, unitPrice: 1430.66, totalPrice: 2861.32},
+  {orderId: 9455, productId: 2274, quantity: 1, unitPrice: 1520.23, totalPrice: 1520.23},
+  {orderId: 9455, productId: 2812, quantity: 3, unitPrice: 98.36, totalPrice: 295.08},
+  {orderId: 9455, productId: 2931, quantity: 4, unitPrice: 325.83, totalPrice: 1303.32},
+  {orderId: 9589, productId: 2149, quantity: 1, unitPrice: 14.75, totalPrice: 14.75},
+  {orderId: 9589, productId: 2306, quantity: 3, unitPrice: 43.07, totalPrice: 129.21},
+  {orderId: 9589, productId: 2325, quantity: 1, unitPrice: 422.21, totalPrice: 422.21},
+  {orderId: 9804, productId: 2297, quantity: 4, unitPrice: 8.32, totalPrice: 33.28},
+  {orderId: 9804, productId: 2312, quantity: 4, unitPrice: 9.21, totalPrice: 36.84},
+  {orderId: 9804, productId: 2358, quantity: 2, unitPrice: 71.75, totalPrice: 143.50},
+  {orderId: 9804, productId: 2779, quantity: 1, unitPrice: 23.02, totalPrice: 23.02},
+  {orderId: 9804, productId: 2866, quantity: 1, unitPrice: 117.85, totalPrice: 117.85},
+  {orderId: 10001, productId: 2247, quantity: 4, unitPrice: 1242.77, totalPrice: 4971.08},
+  {orderId: 10001, productId: 2422, quantity: 1, unitPrice: 17.84, totalPrice: 17.84},
+  {orderId: 10001, productId: 2730, quantity: 3, unitPrice: 220.27, totalPrice: 660.81},
+  {orderId: 10524, productId: 2277, quantity: 4, unitPrice: 81.24, totalPrice: 324.96},
+  {orderId: 11326, productId: 2140, quantity: 3, unitPrice: 8.24, totalPrice: 24.72},
+  {orderId: 11326, productId: 2721, quantity: 3, unitPrice: 705.05, totalPrice: 2115.15},
+  {orderId: 12443, productId: 2306, quantity: 1, unitPrice: 46.82, totalPrice: 46.82},
+  {orderId: 12443, productId: 2793, quantity: 3, unitPrice: 463.71, totalPrice: 1391.13},
+  {orderId: 12443, productId: 2867, quantity: 2, unitPrice: 740.30, totalPrice: 1480.60},
+  {orderId: 12443, productId: 2912, quantity: 2, unitPrice: 1329.80, totalPrice: 2659.60},
+  {orderId: 12443, productId: 2997, quantity: 2, unitPrice: 1618.21, totalPrice: 3236.42},
+  {orderId: 13926, productId: 2039, quantity: 3, unitPrice: 1523.62, totalPrice: 4570.86},
+  {orderId: 13926, productId: 2272, quantity: 4, unitPrice: 574.13, totalPrice: 2296.52},
+  {orderId: 13926, productId: 2493, quantity: 4, unitPrice: 96.24, totalPrice: 384.96},
+  {orderId: 13926, productId: 2790, quantity: 3, unitPrice: 63.67, totalPrice: 191.01},
+  {orderId: 13990, productId: 2021, quantity: 1, unitPrice: 1351.94, totalPrice: 1351.94},
+  {orderId: 13990, productId: 2198, quantity: 1, unitPrice: 410.72, totalPrice: 410.72},
+  {orderId: 13990, productId: 2918, quantity: 1, unitPrice: 267.84, totalPrice: 267.84},
+  {orderId: 14250, productId: 2459, quantity: 2, unitPrice: 57.08, totalPrice: 114.16},
+  {orderId: 14250, productId: 2475, quantity: 4, unitPrice: 90.34, totalPrice: 361.36},
+  {orderId: 14250, productId: 2723, quantity: 1, unitPrice: 7.96, totalPrice: 7.96},
+  {orderId: 14981, productId: 2026, quantity: 2, unitPrice: 5.43, totalPrice: 10.86},
+  {orderId: 14981, productId: 2282, quantity: 1, unitPrice: 345.96, totalPrice: 345.96},
+  {orderId: 14981, productId: 2284, quantity: 3, unitPrice: 40.65, totalPrice: 121.95},
+  {orderId: 14981, productId: 2968, quantity: 3, unitPrice: 24.74, totalPrice: 74.22},
+  {orderId: 15445, productId: 2144, quantity: 1, unitPrice: 200.64, totalPrice: 200.64},
+  {orderId: 15445, productId: 2147, quantity: 1, unitPrice: 1675.49, totalPrice: 1675.49},
+  {orderId: 15445, productId: 2521, quantity: 4, unitPrice: 5.34, totalPrice: 21.36},
+  {orderId: 15445, productId: 2774, quantity: 4, unitPrice: 1453.43, totalPrice: 5813.72},
+  {orderId: 15714, productId: 2329, quantity: 1, unitPrice: 22.32, totalPrice: 22.32},
+  {orderId: 15714, productId: 2383, quantity: 2, unitPrice: 330.59, totalPrice: 661.18},
+  {orderId: 16468, productId: 2030, quantity: 1, unitPrice: 288.98, totalPrice: 288.98},
+  {orderId: 16468, productId: 2263, quantity: 4, unitPrice: 77.07, totalPrice: 308.28},
+  {orderId: 16468, productId: 2985, quantity: 4, unitPrice: 646.15, totalPrice: 2584.60},
+  {orderId: 16710, productId: 2043, quantity: 4, unitPrice: 5.64, totalPrice: 22.56},
+  {orderId: 16710, productId: 2471, quantity: 3, unitPrice: 602.97, totalPrice: 1808.91},
+  {orderId: 16710, productId: 2687, quantity: 1, unitPrice: 532.37, totalPrice: 532.37},
+  {orderId: 16801, productId: 2257, quantity: 4, unitPrice: 1360.16, totalPrice: 5440.64},
+  {orderId: 16801, productId: 2291, quantity: 4, unitPrice: 420, totalPrice: 1680},
+  {orderId: 16801, productId: 2458, quantity: 3, unitPrice: 5.02, totalPrice: 15.06},
+  {orderId: 16801, productId: 2620, quantity: 3, unitPrice: 25.62, totalPrice: 76.86},
+  {orderId: 16801, productId: 2630, quantity: 3, unitPrice: 18.18, totalPrice: 54.54},
+  {orderId: 16826, productId: 2013, quantity: 2, unitPrice: 291.44, totalPrice: 582.88},
+  {orderId: 16826, productId: 2127, quantity: 2, unitPrice: 269.95, totalPrice: 539.90},
+  {orderId: 16826, productId: 2308, quantity: 3, unitPrice: 26.39, totalPrice: 79.17},
+  {orderId: 16826, productId: 2575, quantity: 2, unitPrice: 95.85, totalPrice: 191.70},
+  {orderId: 16826, productId: 2979, quantity: 4, unitPrice: 112.81, totalPrice: 451.24},
+  {orderId: 18956, productId: 2299, quantity: 4, unitPrice: 15.59, totalPrice: 62.36},
+  {orderId: 18956, productId: 2555, quantity: 4, unitPrice: 17.97, totalPrice: 71.88},
+  {orderId: 18956, productId: 2952, quantity: 2, unitPrice: 191.09, totalPrice: 382.18},
+  {orderId: 19173, productId: 2235, quantity: 1, unitPrice: 27.30, totalPrice: 27.30},
+  {orderId: 19173, productId: 2297, quantity: 2, unitPrice: 8.91, totalPrice: 17.82},
+  {orderId: 19173, productId: 2637, quantity: 2, unitPrice: 943.79, totalPrice: 1887.58},
+  {orderId: 19173, productId: 2687, quantity: 1, unitPrice: 553.70, totalPrice: 553.70},
+  {orderId: 19173, productId: 2709, quantity: 1, unitPrice: 976.58, totalPrice: 976.58},
+  {orderId: 19564, productId: 2112, quantity: 2, unitPrice: 11.60, totalPrice: 23.20},
+  {orderId: 19564, productId: 2624, quantity: 1, unitPrice: 985.77, totalPrice: 985.77},
+  {orderId: 19564, productId: 2785, quantity: 1, unitPrice: 21.59, totalPrice: 21.59},
+  {orderId: 19564, productId: 2827, quantity: 3, unitPrice: 33.38, totalPrice: 100.14},
+  {orderId: 19564, productId: 2970, quantity: 1, unitPrice: 54.28, totalPrice: 54.28},
+  {orderId: 19761, productId: 2090, quantity: 2, unitPrice: 15.76, totalPrice: 31.52},
+  {orderId: 19761, productId: 2325, quantity: 1, unitPrice: 448.91, totalPrice: 448.91},
+  {orderId: 19761, productId: 2696, quantity: 3, unitPrice: 156.61, totalPrice: 469.83},
+  {orderId: 19761, productId: 2818, quantity: 2, unitPrice: 199.35, totalPrice: 398.70},
+  {orderId: 19761, productId: 2992, quantity: 2, unitPrice: 92.13, totalPrice: 184.26},
+  {orderId: 20553, productId: 2012, quantity: 2, unitPrice: 22.76, totalPrice: 45.52},
+  {orderId: 20553, productId: 2586, quantity: 1, unitPrice: 12.85, totalPrice: 12.85},
+  {orderId: 20553, productId: 2700, quantity: 1, unitPrice: 15.03, totalPrice: 15.03},
+  {orderId: 20553, productId: 2734, quantity: 3, unitPrice: 9.68, totalPrice: 29.04},
+  {orderId: 24702, productId: 2299, quantity: 3, unitPrice: 16.14, totalPrice: 48.42},
+  {orderId: 24702, productId: 2331, quantity: 2, unitPrice: 167.03, totalPrice: 334.06},
+  {orderId: 24702, productId: 2966, quantity: 3, unitPrice: 1337.97, totalPrice: 4013.91},
+  {orderId: 24878, productId: 2017, quantity: 4, unitPrice: 23.34, totalPrice: 93.36},
+  {orderId: 24878, productId: 2204, quantity: 1, unitPrice: 606.94, totalPrice: 606.94},
+  {orderId: 24878, productId: 2682, quantity: 3, unitPrice: 16.13, totalPrice: 48.39},
+  {orderId: 24878, productId: 2974, quantity: 4, unitPrice: 1058.63, totalPrice: 4234.52},
+  {orderId: 25963, productId: 2964, quantity: 1, unitPrice: 16.86, totalPrice: 16.86},
+  {orderId: 26430, productId: 2086, quantity: 4, unitPrice: 15.99, totalPrice: 63.96},
+  {orderId: 26430, productId: 2479, quantity: 3, unitPrice: 60.60, totalPrice: 181.80},
+  {orderId: 26430, productId: 2883, quantity: 2, unitPrice: 234.48, totalPrice: 468.96},
+  {orderId: 26430, productId: 2924, quantity: 4, unitPrice: 444.27, totalPrice: 1777.08},
+  {orderId: 26897, productId: 2167, quantity: 4, unitPrice: 218.71, totalPrice: 874.84},
+  {orderId: 26897, productId: 2341, quantity: 3, unitPrice: 760.87, totalPrice: 2282.61},
+  {orderId: 26897, productId: 2501, quantity: 2, unitPrice: 34.64, totalPrice: 69.28},
+  {orderId: 26897, productId: 2695, quantity: 4, unitPrice: 444.86, totalPrice: 1779.44},
+  {orderId: 28373, productId: 2351, quantity: 2, unitPrice: 157.66, totalPrice: 315.32},
+  {orderId: 28373, productId: 2809, quantity: 3, unitPrice: 139.35, totalPrice: 418.05},
+  {orderId: 28373, productId: 2996, quantity: 4, unitPrice: 51.45, totalPrice: 205.80},
+  {orderId: 28892, productId: 2368, quantity: 4, unitPrice: 153.10, totalPrice: 612.40},
+  {orderId: 28892, productId: 2530, quantity: 4, unitPrice: 1245.78, totalPrice: 4983.12},
+  {orderId: 29763, productId: 2017, quantity: 2, unitPrice: 21.94, totalPrice: 43.88},
+  {orderId: 29763, productId: 2310, quantity: 3, unitPrice: 373.54, totalPrice: 1120.62},
+  {orderId: 29763, productId: 2645, quantity: 4, unitPrice: 1251.29, totalPrice: 5005.16},
+  {orderId: 29763, productId: 2675, quantity: 1, unitPrice: 57.45, totalPrice: 57.45},
+  {orderId: 29763, productId: 2932, quantity: 4, unitPrice: 1818.94, totalPrice: 7275.76},
+  {orderId: 30107, productId: 2096, quantity: 3, unitPrice: 68.51, totalPrice: 205.53},
+  {orderId: 30107, productId: 2308, quantity: 3, unitPrice: 27.51, totalPrice: 82.53},
+  {orderId: 30107, productId: 2379, quantity: 2, unitPrice: 11.02, totalPrice: 22.04},
+  {orderId: 30107, productId: 2829, quantity: 3, unitPrice: 23.49, totalPrice: 70.47},
+  {orderId: 31179, productId: 2481, quantity: 1, unitPrice: 107.46, totalPrice: 107.46},
+  {orderId: 31179, productId: 2851, quantity: 2, unitPrice: 175.18, totalPrice: 350.36},
+  {orderId: 32023, productId: 2027, quantity: 2, unitPrice: 1757.87, totalPrice: 3515.74},
+  {orderId: 32023, productId: 2201, quantity: 2, unitPrice: 1443, totalPrice: 2886},
+  {orderId: 32023, productId: 2221, quantity: 2, unitPrice: 22.21, totalPrice: 44.42},
+  {orderId: 32023, productId: 2396, quantity: 4, unitPrice: 206.98, totalPrice: 827.92},
+  {orderId: 33064, productId: 2002, quantity: 2, unitPrice: 117.87, totalPrice: 235.74},
+  {orderId: 33064, productId: 2420, quantity: 3, unitPrice: 15.13, totalPrice: 45.39},
+  {orderId: 33769, productId: 2351, quantity: 4, unitPrice: 176.19, totalPrice: 704.76},
+  {orderId: 34239, productId: 2194, quantity: 4, unitPrice: 399.58, totalPrice: 1598.32},
+  {orderId: 34239, productId: 2439, quantity: 1, unitPrice: 183.21, totalPrice: 183.21},
+  {orderId: 34239, productId: 2551, quantity: 4, unitPrice: 6.61, totalPrice: 26.44},
+  {orderId: 34239, productId: 2596, quantity: 2, unitPrice: 883.55, totalPrice: 1767.10},
+  {orderId: 34239, productId: 2917, quantity: 3, unitPrice: 5.57, totalPrice: 16.71},
+  {orderId: 34804, productId: 2144, quantity: 1, unitPrice: 221.82, totalPrice: 221.82},
+  {orderId: 34804, productId: 2397, quantity: 4, unitPrice: 132.40, totalPrice: 529.60},
+  {orderId: 34804, productId: 2449, quantity: 4, unitPrice: 366.40, totalPrice: 1465.60},
+  {orderId: 34804, productId: 2710, quantity: 4, unitPrice: 709.67, totalPrice: 2838.68},
+  {orderId: 37486, productId: 2545, quantity: 1, unitPrice: 9.08, totalPrice: 9.08},
+  {orderId: 37486, productId: 2551, quantity: 2, unitPrice: 6.53, totalPrice: 13.06},
+  {orderId: 37486, productId: 2643, quantity: 1, unitPrice: 23.57, totalPrice: 23.57},
+  {orderId: 37486, productId: 2706, quantity: 4, unitPrice: 364.32, totalPrice: 1457.28},
+  {orderId: 37673, productId: 2253, quantity: 2, unitPrice: 31.92, totalPrice: 63.84},
+  {orderId: 37673, productId: 2486, quantity: 1, unitPrice: 21.12, totalPrice: 21.12},
+  {orderId: 37673, productId: 2732, quantity: 2, unitPrice: 1395.09, totalPrice: 2790.18},
+  {orderId: 37803, productId: 2023, quantity: 4, unitPrice: 254.80, totalPrice: 1019.20},
+  {orderId: 37803, productId: 2223, quantity: 2, unitPrice: 13.13, totalPrice: 26.26},
+  {orderId: 37803, productId: 2614, quantity: 3, unitPrice: 111.67, totalPrice: 335.01},
+  {orderId: 37803, productId: 2753, quantity: 2, unitPrice: 15.21, totalPrice: 30.42},
+  {orderId: 37803, productId: 2896, quantity: 4, unitPrice: 213.53, totalPrice: 854.12},
+  {orderId: 40051, productId: 2291, quantity: 2, unitPrice: 419.54, totalPrice: 839.08},
+  {orderId: 40051, productId: 2537, quantity: 1, unitPrice: 55.93, totalPrice: 55.93},
+  {orderId: 40051, productId: 2564, quantity: 1, unitPrice: 44.49, totalPrice: 44.49},
+  {orderId: 40051, productId: 2610, quantity: 2, unitPrice: 1261.52, totalPrice: 2523.04},
+  {orderId: 40051, productId: 2877, quantity: 4, unitPrice: 235.95, totalPrice: 943.80},
+  {orderId: 42805, productId: 2200, quantity: 4, unitPrice: 15.72, totalPrice: 62.88},
+  {orderId: 42805, productId: 2579, quantity: 4, unitPrice: 112.75, totalPrice: 451},
+  {orderId: 43138, productId: 2142, quantity: 3, unitPrice: 46.52, totalPrice: 139.56},
+  {orderId: 43138, productId: 2221, quantity: 2, unitPrice: 19.70, totalPrice: 39.40},
+  {orderId: 43138, productId: 2490, quantity: 4, unitPrice: 245.06, totalPrice: 980.24},
+  {orderId: 43138, productId: 2869, quantity: 4, unitPrice: 669.56, totalPrice: 2678.24},
+  {orderId: 43784, productId: 2449, quantity: 4, unitPrice: 337.72, totalPrice: 1350.88},
+  {orderId: 43784, productId: 2540, quantity: 4, unitPrice: 1192.06, totalPrice: 4768.24},
+  {orderId: 43784, productId: 2723, quantity: 3, unitPrice: 8.81, totalPrice: 26.43},
+  {orderId: 43784, productId: 2754, quantity: 1, unitPrice: 73.57, totalPrice: 73.57},
+  {orderId: 43912, productId: 2070, quantity: 3, unitPrice: 1454.48, totalPrice: 4363.44},
+  {orderId: 43912, productId: 2086, quantity: 4, unitPrice: 15.97, totalPrice: 63.88},
+  {orderId: 43912, productId: 2818, quantity: 4, unitPrice: 192.10, totalPrice: 768.40},
+  {orderId: 43995, productId: 2048, quantity: 4, unitPrice: 452.81, totalPrice: 1811.24},
+  {orderId: 43995, productId: 2291, quantity: 4, unitPrice: 384.49, totalPrice: 1537.96},
+  {orderId: 43995, productId: 2845, quantity: 4, unitPrice: 23.30, totalPrice: 93.20},
+  {orderId: 43995, productId: 2873, quantity: 1, unitPrice: 1885.32, totalPrice: 1885.32},
+  {orderId: 44434, productId: 2420, quantity: 1, unitPrice: 15.79, totalPrice: 15.79},
+  {orderId: 44434, productId: 2570, quantity: 2, unitPrice: 47.35, totalPrice: 94.70},
+  {orderId: 44434, productId: 2672, quantity: 3, unitPrice: 91.17, totalPrice: 273.51},
+  {orderId: 44434, productId: 2877, quantity: 2, unitPrice: 232.24, totalPrice: 464.48},
+  {orderId: 44434, productId: 2989, quantity: 4, unitPrice: 1212.17, totalPrice: 4848.68},
+  {orderId: 45238, productId: 2066, quantity: 4, unitPrice: 1108.98, totalPrice: 4435.92},
+  {orderId: 48110, productId: 2537, quantity: 3, unitPrice: 52.57, totalPrice: 157.71},
+  {orderId: 48110, productId: 2539, quantity: 1, unitPrice: 8.23, totalPrice: 8.23},
+  {orderId: 48110, productId: 2683, quantity: 1, unitPrice: 15.25, totalPrice: 15.25},
+  {orderId: 48110, productId: 2800, quantity: 3, unitPrice: 7.26, totalPrice: 21.78},
+  {orderId: 48505, productId: 2505, quantity: 1, unitPrice: 783.43, totalPrice: 783.43},
+  {orderId: 48505, productId: 2857, quantity: 4, unitPrice: 22.74, totalPrice: 90.96},
+  {orderId: 48505, productId: 2870, quantity: 4, unitPrice: 23.08, totalPrice: 92.32},
+  {orderId: 48505, productId: 2884, quantity: 2, unitPrice: 1725.33, totalPrice: 3450.66},
+  {orderId: 48558, productId: 2300, quantity: 4, unitPrice: 1107.82, totalPrice: 4431.28},
+  {orderId: 48558, productId: 2367, quantity: 1, unitPrice: 51.29, totalPrice: 51.29},
+  {orderId: 48867, productId: 2295, quantity: 4, unitPrice: 4.91, totalPrice: 19.64},
+  {orderId: 48867, productId: 2732, quantity: 3, unitPrice: 1379.60, totalPrice: 4138.80},
+  {orderId: 48867, productId: 2866, quantity: 3, unitPrice: 120.28, totalPrice: 360.84},
+  {orderId: 48867, productId: 2911, quantity: 1, unitPrice: 546.43, totalPrice: 546.43},
+  {orderId: 49416, productId: 2058, quantity: 1, unitPrice: 1630.44, totalPrice: 1630.44},
+  {orderId: 49416, productId: 2209, quantity: 2, unitPrice: 1665.07, totalPrice: 3330.14},
+  {orderId: 49416, productId: 2247, quantity: 3, unitPrice: 1234.39, totalPrice: 3703.17},
+  {orderId: 49416, productId: 2771, quantity: 1, unitPrice: 986.94, totalPrice: 986.94},
+  {orderId: 50560, productId: 2167, quantity: 4, unitPrice: 244.71, totalPrice: 978.84},
+  {orderId: 50560, productId: 2204, quantity: 3, unitPrice: 670.90, totalPrice: 2012.70},
+  {orderId: 50560, productId: 2603, quantity: 2, unitPrice: 500.88, totalPrice: 1001.76},
+  {orderId: 50560, productId: 2892, quantity: 4, unitPrice: 132.35, totalPrice: 529.40},
+  {orderId: 50905, productId: 2223, quantity: 3, unitPrice: 14.62, totalPrice: 43.86},
+  {orderId: 50905, productId: 2903, quantity: 2, unitPrice: 20.97, totalPrice: 41.94},
+  {orderId: 50905, productId: 2939, quantity: 1, unitPrice: 662.45, totalPrice: 662.45},
+  {orderId: 51214, productId: 2238, quantity: 1, unitPrice: 1431.98, totalPrice: 1431.98},
+  {orderId: 51214, productId: 2486, quantity: 1, unitPrice: 21.89, totalPrice: 21.89},
+  {orderId: 51214, productId: 2610, quantity: 4, unitPrice: 1321.50, totalPrice: 5286},
+  {orderId: 51214, productId: 2809, quantity: 2, unitPrice: 141.70, totalPrice: 283.40},
+  {orderId: 51214, productId: 2912, quantity: 1, unitPrice: 1346.01, totalPrice: 1346.01},
+  {orderId: 52036, productId: 2263, quantity: 1, unitPrice: 83.22, totalPrice: 83.22},
+  {orderId: 52036, productId: 2399, quantity: 4, unitPrice: 12.26, totalPrice: 49.04},
+  {orderId: 52036, productId: 2543, quantity: 3, unitPrice: 782.82, totalPrice: 2348.46},
+  {orderId: 52036, productId: 2732, quantity: 2, unitPrice: 1431.18, totalPrice: 2862.36}
+] AS row
+MATCH (o:Order   {orderId:   row.orderId})
+MATCH (p:Product {productId: row.productId})
+MERGE (o)-[r:CONTAINS]->(p)
+SET   r.quantity = row.quantity, r.unitPrice = row.unitPrice,
+      r.totalPrice = row.totalPrice
+RETURN count(r) AS orderLinesLoaded;
+
+// --> 229
+
+
+// ---------------------------------------------------------------- 3.18
+// Reviews (63 nodes) plus WROTE and REVIEWS relationships.
+// A Review is its own NODE because it has its own properties and connects
+// two different things (a customer and a product).
+
+UNWIND [
+  {reviewId: 5468, customerId: 1716, productId: 2096, rating: 5, title: "Fantastic", reviewDate: datetime("2023-09-01T16:47:00"), sentiment: "Positive", helpfulVotes: 15, verified: true},
+  {reviewId: 5502, customerId: 7936, productId: 2253, rating: 3, title: "Its fine", reviewDate: datetime("2023-05-25T20:28:00"), sentiment: "Neutral", helpfulVotes: 115, verified: true},
+  {reviewId: 5633, customerId: 7936, productId: 2306, rating: 5, title: "Best purchase", reviewDate: datetime("2023-07-31T15:26:00"), sentiment: "Positive", helpfulVotes: 133, verified: true},
+  {reviewId: 5911, customerId: 3068, productId: 2769, rating: 5, title: "Best purchase", reviewDate: datetime("2024-02-29T07:39:00"), sentiment: "Positive", helpfulVotes: 72, verified: true},
+  {reviewId: 6058, customerId: 1716, productId: 2992, rating: 5, title: "Outstanding", reviewDate: datetime("2024-05-31T18:49:00"), sentiment: "Positive", helpfulVotes: 75, verified: true},
+  {reviewId: 6188, customerId: 1059, productId: 2883, rating: 4, title: "Nice quality", reviewDate: datetime("2023-11-14T07:36:00"), sentiment: "Positive", helpfulVotes: 142, verified: true},
+  {reviewId: 6399, customerId: 3068, productId: 2999, rating: 2, title: "Wouldn't recommend", reviewDate: datetime("2024-03-11T07:39:00"), sentiment: "Negative", helpfulVotes: 39, verified: true},
+  {reviewId: 6804, customerId: 10470, productId: 2579, rating: 2, title: "Wouldn't recommend", reviewDate: datetime("2023-11-11T21:39:00"), sentiment: "Negative", helpfulVotes: 79, verified: true},
+  {reviewId: 7393, customerId: 3160, productId: 2732, rating: 5, title: "Best purchase", reviewDate: datetime("2024-05-29T09:46:00"), sentiment: "Positive", helpfulVotes: 113, verified: true},
+  {reviewId: 7454, customerId: 4621, productId: 2127, rating: 4, title: "Nice quality", reviewDate: datetime("2024-11-13T10:04:00"), sentiment: "Positive", helpfulVotes: 103, verified: true},
+  {reviewId: 8384, customerId: 4254, productId: 2027, rating: 4, title: "Pleased with this", reviewDate: datetime("2024-08-27T18:59:00"), sentiment: "Positive", helpfulVotes: 68, verified: true},
+  {reviewId: 10836, customerId: 3160, productId: 2997, rating: 3, title: "Okay", reviewDate: datetime("2024-10-27T15:25:00"), sentiment: "Neutral", helpfulVotes: 132, verified: true},
+  {reviewId: 11383, customerId: 7590, productId: 2866, rating: 5, title: "Best purchase", reviewDate: datetime("2024-04-14T22:55:00"), sentiment: "Positive", helpfulVotes: 61, verified: true},
+  {reviewId: 11485, customerId: 8310, productId: 2867, rating: 3, title: "Could be better", reviewDate: datetime("2023-10-28T09:25:00"), sentiment: "Neutral", helpfulVotes: 119, verified: true},
+  {reviewId: 12144, customerId: 10470, productId: 2299, rating: 5, title: "Excellent!", reviewDate: datetime("2023-09-11T10:34:00"), sentiment: "Positive", helpfulVotes: 129, verified: true},
+  {reviewId: 12447, customerId: 5399, productId: 2383, rating: 4, title: "Happy with it", reviewDate: datetime("2024-10-01T09:09:00"), sentiment: "Positive", helpfulVotes: 47, verified: true},
+  {reviewId: 12803, customerId: 4086, productId: 2939, rating: 5, title: "Outstanding", reviewDate: datetime("2024-10-31T18:25:00"), sentiment: "Positive", helpfulVotes: 77, verified: true},
+  {reviewId: 13227, customerId: 1059, productId: 2086, rating: 4, title: "Nice quality", reviewDate: datetime("2023-10-31T07:36:00"), sentiment: "Positive", helpfulVotes: 32, verified: true},
+  {reviewId: 14059, customerId: 1716, productId: 2341, rating: 4, title: "Works great", reviewDate: datetime("2023-11-17T22:41:00"), sentiment: "Positive", helpfulVotes: 42, verified: true},
+  {reviewId: 14093, customerId: 7590, productId: 2027, rating: 3, title: "So-so", reviewDate: datetime("2023-11-09T16:01:00"), sentiment: "Neutral", helpfulVotes: 119, verified: true},
+  {reviewId: 15217, customerId: 4086, productId: 2551, rating: 5, title: "Outstanding", reviewDate: datetime("2023-12-30T20:59:00"), sentiment: "Positive", helpfulVotes: 52, verified: true},
+  {reviewId: 15263, customerId: 3148, productId: 2918, rating: 3, title: "Decent enough", reviewDate: datetime("2024-06-26T18:48:00"), sentiment: "Neutral", helpfulVotes: 148, verified: true},
+  {reviewId: 15494, customerId: 4254, productId: 2779, rating: 5, title: "Amazing", reviewDate: datetime("2023-04-14T14:28:00"), sentiment: "Positive", helpfulVotes: 143, verified: true},
+  {reviewId: 15824, customerId: 5399, productId: 2329, rating: 5, title: "Highly recommend", reviewDate: datetime("2024-10-11T09:09:00"), sentiment: "Positive", helpfulVotes: 142, verified: true},
+  {reviewId: 16507, customerId: 3160, productId: 2147, rating: 4, title: "Good stuff", reviewDate: datetime("2023-02-05T13:43:00"), sentiment: "Positive", helpfulVotes: 108, verified: true},
+  {reviewId: 16714, customerId: 3160, productId: 2774, rating: 5, title: "Outstanding", reviewDate: datetime("2023-02-27T13:43:00"), sentiment: "Positive", helpfulVotes: 65, verified: true},
+  {reviewId: 16969, customerId: 7936, productId: 2149, rating: 5, title: "Perfect", reviewDate: datetime("2023-08-15T15:26:00"), sentiment: "Positive", helpfulVotes: 114, verified: true},
+  {reviewId: 17288, customerId: 4086, productId: 2545, rating: 4, title: "Solid buy", reviewDate: datetime("2024-01-01T20:59:00"), sentiment: "Positive", helpfulVotes: 23, verified: true},
+  {reviewId: 18864, customerId: 1059, productId: 2297, rating: 4, title: "Good stuff", reviewDate: datetime("2023-04-13T12:43:00"), sentiment: "Positive", helpfulVotes: 60, verified: true},
+  {reviewId: 19316, customerId: 3148, productId: 2021, rating: 5, title: "Fantastic", reviewDate: datetime("2024-06-15T18:48:00"), sentiment: "Positive", helpfulVotes: 124, verified: true},
+  {reviewId: 19557, customerId: 4086, productId: 2643, rating: 4, title: "Works great", reviewDate: datetime("2023-12-31T20:59:00"), sentiment: "Positive", helpfulVotes: 149, verified: true},
+  {reviewId: 19614, customerId: 3148, productId: 2086, rating: 5, title: "Highly recommend", reviewDate: datetime("2024-03-25T14:16:00"), sentiment: "Positive", helpfulVotes: 120, verified: true},
+  {reviewId: 19700, customerId: 1059, productId: 2610, rating: 5, title: "Fantastic", reviewDate: datetime("2023-09-20T17:17:00"), sentiment: "Positive", helpfulVotes: 133, verified: true},
+  {reviewId: 19866, customerId: 4254, productId: 2297, rating: 1, title: "Complete waste", reviewDate: datetime("2023-04-02T14:28:00"), sentiment: "Negative", helpfulVotes: 118, verified: true},
+  {reviewId: 21863, customerId: 2438, productId: 2149, rating: 1, title: "Complete waste", reviewDate: datetime("2024-12-25T15:34:00"), sentiment: "Negative", helpfulVotes: 139, verified: true},
+  {reviewId: 22865, customerId: 3160, productId: 2284, rating: 4, title: "Happy with it", reviewDate: datetime("2024-06-04T09:46:00"), sentiment: "Positive", helpfulVotes: 27, verified: true},
+  {reviewId: 23088, customerId: 3148, productId: 2198, rating: 5, title: "Amazing", reviewDate: datetime("2024-06-20T18:48:00"), sentiment: "Positive", helpfulVotes: 58, verified: true},
+  {reviewId: 24141, customerId: 3160, productId: 2892, rating: 5, title: "Love it!", reviewDate: datetime("2024-02-06T07:52:00"), sentiment: "Positive", helpfulVotes: 90, verified: true},
+  {reviewId: 24322, customerId: 4599, productId: 2884, rating: 4, title: "Happy with it", reviewDate: datetime("2023-09-16T10:46:00"), sentiment: "Positive", helpfulVotes: 133, verified: true},
+  {reviewId: 24372, customerId: 1059, productId: 2924, rating: 5, title: "Excellent!", reviewDate: datetime("2023-11-23T07:36:00"), sentiment: "Positive", helpfulVotes: 74, verified: true},
+  {reviewId: 24446, customerId: 3068, productId: 2481, rating: 4, title: "Pleased with this", reviewDate: datetime("2024-03-26T07:39:00"), sentiment: "Positive", helpfulVotes: 30, verified: true},
+  {reviewId: 24892, customerId: 4621, productId: 2140, rating: 2, title: "Disappointed", reviewDate: datetime("2024-10-09T22:49:00"), sentiment: "Negative", helpfulVotes: 45, verified: true},
+  {reviewId: 25517, customerId: 8150, productId: 2142, rating: 4, title: "Recommended", reviewDate: datetime("2024-12-09T09:50:00"), sentiment: "Positive", helpfulVotes: 134, verified: true},
+  {reviewId: 26736, customerId: 5399, productId: 2468, rating: 5, title: "Amazing", reviewDate: datetime("2024-11-03T20:55:00"), sentiment: "Positive", helpfulVotes: 5, verified: true},
+  {reviewId: 26738, customerId: 3068, productId: 2147, rating: 5, title: "Excellent!", reviewDate: datetime("2024-04-14T18:03:00"), sentiment: "Positive", helpfulVotes: 119, verified: true},
+  {reviewId: 26917, customerId: 1059, productId: 2486, rating: 4, title: "Nice quality", reviewDate: datetime("2023-09-21T17:17:00"), sentiment: "Positive", helpfulVotes: 84, verified: true},
+  {reviewId: 28057, customerId: 4599, productId: 2857, rating: 4, title: "Solid buy", reviewDate: datetime("2023-09-07T10:46:00"), sentiment: "Positive", helpfulVotes: 33, verified: true},
+  {reviewId: 28230, customerId: 3148, productId: 2952, rating: 4, title: "Good product", reviewDate: datetime("2023-09-09T14:12:00"), sentiment: "Positive", helpfulVotes: 145, verified: true},
+  {reviewId: 28438, customerId: 3148, productId: 2812, rating: 2, title: "Poor quality", reviewDate: datetime("2024-11-21T09:16:00"), sentiment: "Negative", helpfulVotes: 14, verified: true},
+  {reviewId: 28962, customerId: 10470, productId: 2966, rating: 4, title: "Solid buy", reviewDate: datetime("2023-09-21T10:34:00"), sentiment: "Positive", helpfulVotes: 125, verified: true},
+  {reviewId: 29437, customerId: 7590, productId: 2911, rating: 4, title: "Pleased with this", reviewDate: datetime("2024-04-03T22:55:00"), sentiment: "Positive", helpfulVotes: 89, verified: true},
+  {reviewId: 29920, customerId: 1059, productId: 2238, rating: 5, title: "Outstanding", reviewDate: datetime("2023-09-08T17:17:00"), sentiment: "Positive", helpfulVotes: 83, verified: true},
+  {reviewId: 30154, customerId: 4621, productId: 2675, rating: 3, title: "Okay", reviewDate: datetime("2024-12-02T10:04:00"), sentiment: "Neutral", helpfulVotes: 64, verified: true},
+  {reviewId: 30416, customerId: 7569, productId: 2209, rating: 5, title: "5 stars", reviewDate: datetime("2024-01-16T18:50:00"), sentiment: "Positive", helpfulVotes: 104, verified: true},
+  {reviewId: 30860, customerId: 7590, productId: 2221, rating: 4, title: "Good stuff", reviewDate: datetime("2023-11-18T16:01:00"), sentiment: "Positive", helpfulVotes: 33, verified: true},
+  {reviewId: 33200, customerId: 6482, productId: 2539, rating: 3, title: "Decent enough", reviewDate: datetime("2023-06-14T18:04:00"), sentiment: "Neutral", helpfulVotes: 128, verified: true},
+  {reviewId: 33375, customerId: 4254, productId: 2820, rating: 4, title: "Pleased with this", reviewDate: datetime("2024-08-09T10:13:00"), sentiment: "Positive", helpfulVotes: 61, verified: true},
+  {reviewId: 33526, customerId: 3160, productId: 2521, rating: 5, title: "Absolutely love it", reviewDate: datetime("2023-02-19T13:43:00"), sentiment: "Positive", helpfulVotes: 142, verified: true},
+  {reviewId: 33559, customerId: 7936, productId: 2721, rating: 2, title: "Not worth it", reviewDate: datetime("2023-10-10T20:44:00"), sentiment: "Negative", helpfulVotes: 12, verified: true},
+  {reviewId: 33906, customerId: 8310, productId: 2997, rating: 4, title: "Great value", reviewDate: datetime("2024-12-28T19:33:00"), sentiment: "Positive", helpfulVotes: 106, verified: true},
+  {reviewId: 34202, customerId: 4254, productId: 2866, rating: 4, title: "Good stuff", reviewDate: datetime("2023-04-08T14:28:00"), sentiment: "Positive", helpfulVotes: 3, verified: true},
+  {reviewId: 34476, customerId: 7716, productId: 2829, rating: 5, title: "Excellent!", reviewDate: datetime("2023-05-23T12:11:00"), sentiment: "Positive", helpfulVotes: 148, verified: true},
+  {reviewId: 34568, customerId: 8310, productId: 2232, rating: 4, title: "Good product", reviewDate: datetime("2023-10-28T09:25:00"), sentiment: "Positive", helpfulVotes: 11, verified: true}
+] AS row
+MERGE (rev:Review {reviewId: row.reviewId})
+SET   rev.rating = row.rating, rev.title = row.title,
+      rev.reviewDate = row.reviewDate, rev.sentiment = row.sentiment,
+      rev.helpfulVotes = row.helpfulVotes, rev.verified = row.verified
+WITH rev, row
+MATCH (c:Customer {customerId: row.customerId})
+MATCH (p:Product  {productId:  row.productId})
+MERGE (c)-[:WROTE]->(rev)
+MERGE (rev)-[:REVIEWS]->(p)
+RETURN count(rev) AS reviewsLoaded;
+
+// --> 63
+
+
+// ---------------------------------------------------------------- 3.19
+// Suppliers (8 nodes) and SUPPLIES relationships.
+
+UNWIND [
+  {supplierId: 10002, name: "Arnold Ltd", country: "USA", city: "New Nancy"},
+  {supplierId: 10003, name: "Rios Group", country: "China", city: "Mooretown"},
+  {supplierId: 10004, name: "Baker Mason and White", country: "China", city: "Lammouth"},
+  {supplierId: 10005, name: "Walker LLC", country: "Bangladesh", city: "Laurenville"},
+  {supplierId: 10006, name: "Lee Group", country: "India", city: "North Beth"},
+  {supplierId: 10007, name: "Adkins Inc", country: "USA", city: "Stephenland"},
+  {supplierId: 10008, name: "Howell-Hart", country: "China", city: "Jamesview"},
+  {supplierId: 10011, name: "Rodriguez Group", country: "Japan", city: "Kelleytown"}
+] AS row
+MERGE (s:Supplier {supplierId: row.supplierId})
+SET   s.name = row.name, s.country = row.country, s.city = row.city
+RETURN count(s) AS suppliersLoaded;
+
+// ---------------------------------------------------------------- 3.20
+
+UNWIND [
+  {productId: 2012, supplierId: 10003},
+  {productId: 2198, supplierId: 10002},
+  {productId: 2291, supplierId: 10004},
+  {productId: 2295, supplierId: 10007},
+  {productId: 2310, supplierId: 10011},
+  {productId: 2645, supplierId: 10011},
+  {productId: 2723, supplierId: 10006},
+  {productId: 2820, supplierId: 10007},
+  {productId: 2866, supplierId: 10005},
+  {productId: 2989, supplierId: 10008}
+] AS row
+MATCH (s:Supplier {supplierId: row.supplierId})
+MATCH (p:Product  {productId:  row.productId})
+MERGE (s)-[:SUPPLIES]->(p)
+RETURN count(*) AS supplyLinks;
+
+// --> 10
+
+
+// ---------------------------------------------------------------- 3.21
+// VERIFY THE LOAD. Check these numbers before continuing.
+
+MATCH (n)
+RETURN labels(n)[0] AS label, count(*) AS count
+ORDER BY count DESC;
+
+// --> Product 186, Orders 66, Reviews 63,
+//     Categories 54, Customers 24, Suppliers 8
+//     TOTAL: 401 nodes
+
+
+// ---------------------------------------------------------------- 3.22
+
+MATCH ()-[r]->()
+RETURN type(r) AS relationship, count(*) AS count
+ORDER BY count DESC;
+
+// --> CONTAINS 229, IN_CATEGORY 186, PLACED 66,
+//     WROTE 63, REVIEWS 63, PARENT_OF 44,
+//     SUPPLIES 10
+//     TOTAL: 661 relationships
+
+
+// ---------------------------------------------------------------- 3.23
+// Have a look at a slice of the graph. LIMIT keeps the picture readable.
+
+MATCH path = (:Customer)-[:PLACED]->(:Order)-[:CONTAINS]->(:Product)
+RETURN path
+LIMIT 25;
+
+// --> Switch to the Graph view. Drag the nodes around. This is your data.
+
+
+// ---------------------------------------------------------------------------
+// CHECKPOINT 3 — you should now be able to answer these:
+//   - What is the difference between CREATE and MERGE, and when do you use each?
+//   - What does UNWIND do?
+//   - Why create constraints BEFORE loading data?
+//   - Why does quantity live on the CONTAINS relationship rather than on
+//     the Product node?
+//   - If MATCH returns 5 rows and you then CREATE, how many things get created?
+// ---------------------------------------------------------------------------
+
+
+//================================================================================
+// SECTION 4 — FILTERING WITH WHERE
+//================================================================================
+
+// So far we have matched everything. Now we narrow it down.
+
+// There are two places to filter:
+//   inline  MATCH (c:Customer {segment: "VIP"})     — only exact equality
+//   WHERE   MATCH (c:Customer) WHERE c.segment = "VIP" — anything at all
+
+// Use inline for simple equality, WHERE for everything else.
+
+
+// ---------------------------------------------------------------- 4.1
+// Inline equality — the shortest form.
+
+MATCH (c:Customer {segment: "VIP"})
+RETURN c.name AS customer, c.city AS city, c.segment AS segment;
+
+// --> 18 rows.
+
+
+// ---------------------------------------------------------------- 4.2
+// Exactly the same result, written with WHERE.
+
+MATCH (c:Customer)
+WHERE c.segment = "VIP"
+RETURN c.name AS customer, c.city AS city, c.segment AS segment;
+
+// --> Identical. Note: = is comparison in Cypher, not assignment.
+
+
+// ---------------------------------------------------------------- 4.3
+// Comparison operators:  =  <>  <  >  <=  >=
+// <> means "not equal to".
+
+MATCH (p:Product)
+WHERE p.price > 1000
+RETURN p.name AS product, p.brand AS brand, p.price AS price
+ORDER BY p.price DESC;
+
+// --> 35 products over $1000.
+
+
+// ---------------------------------------------------------------- 4.4
+// Combine conditions with AND, OR, NOT. Use parentheses when mixing them.
+
+MATCH (p:Product)
+WHERE p.price > 500 AND p.avgRating >= 4.0
+RETURN p.name AS product, p.price AS price, p.avgRating AS rating
+ORDER BY p.price DESC;
+
+// --> Expensive AND well-rated. Both conditions must hold.
+
+
+// ---------------------------------------------------------------- 4.5
+// OR widens the net.
+
+MATCH (c:Customer)
+WHERE c.segment = "Churned" OR c.segment = "At-Risk"
+RETURN c.name AS customer, c.segment AS segment, c.city AS city;
+
+// --> 4 rows.
+
+
+// ---------------------------------------------------------------- 4.6
+// IN is much cleaner than a chain of ORs. Same answer as 4.5.
+
+MATCH (c:Customer)
+WHERE c.segment IN ["Churned", "At-Risk"]
+RETURN c.name AS customer, c.segment AS segment, c.city AS city;
+
+// --> Same 4 rows. Prefer IN when checking a list of values.
+
+
+// ---------------------------------------------------------------- 4.7
+// NOT negates a condition.
+
+MATCH (o:Order)
+WHERE NOT o.status = "Delivered"
+RETURN o.orderId AS orderId, o.status AS status, o.totalAmount AS amount
+ORDER BY o.totalAmount DESC
+LIMIT 10;
+
+// --> Everything except Delivered. Same as: WHERE o.status <> "Delivered"
+
+
+// ---------------------------------------------------------------- 4.8
+// Text matching: STARTS WITH, ENDS WITH, CONTAINS. Case-SENSITIVE.
+
+MATCH (p:Product)
+WHERE p.name STARTS WITH "Flex"
+RETURN p.name AS product, p.brand AS brand, p.price AS price;
+
+// --> Products whose name begins with "Flex".
+
+
+// ---------------------------------------------------------------- 4.9
+// CONTAINS looks anywhere in the string.
+
+MATCH (p:Product)
+WHERE p.name CONTAINS "Watch"
+RETURN p.name AS product, p.price AS price;
+
+
+// ---------------------------------------------------------------- 4.10
+// For case-INSENSITIVE matching, use a regular expression with =~
+// The (?i) at the front means "ignore case".
+
+MATCH (p:Product)
+WHERE p.name =~ "(?i).*watch.*"
+RETURN p.name AS product, p.price AS price;
+
+// --> Now "watch", "Watch" and "WATCH" all match.
+
+
+// ---------------------------------------------------------------- 4.11
+// Missing data: IS NULL and IS NOT NULL.
+// A property that was never set simply does not exist on that node.
+
+MATCH (p:Product)
+WHERE p.avgRating IS NULL
+RETURN count(p) AS productsWithNoRating;
+
+
+// ---------------------------------------------------------------- 4.12
+// The reverse.
+
+MATCH (p:Product)
+WHERE p.avgRating IS NOT NULL AND p.avgRating >= 4.5
+RETURN p.name AS product, p.avgRating AS rating
+ORDER BY p.avgRating DESC
+LIMIT 10;
+
+
+// ---------------------------------------------------------------- 4.13
+// Ranges: chain two comparisons with AND.
+
+MATCH (p:Product)
+WHERE p.price >= 100 AND p.price <= 300
+RETURN p.name AS product, p.price AS price
+ORDER BY p.price;
+
+// --> 33 products between $100 and $300.
+
+
+// ---------------------------------------------------------------- 4.14
+// Booleans need no comparison — the property IS the condition.
+
+MATCH (p:Product)
+WHERE p.featured
+RETURN p.name AS product, p.price AS price, p.featured AS featured
+LIMIT 10;
+
+// --> Same as "WHERE p.featured = true", but shorter and idiomatic.
+
+
+// ---------------------------------------------------------------- 4.15
+// Dates. Compare a datetime property against datetime("...").
+
+MATCH (o:Order)
+WHERE o.orderDate >= datetime("2024-01-01T00:00:00")
+RETURN o.orderId AS orderId, o.orderDate AS placed, o.totalAmount AS amount
+ORDER BY o.orderDate
+LIMIT 10;
+
+
+// ---------------------------------------------------------------- 4.16
+// You can pull parts out of a date with dot notation.
+
+MATCH (o:Order)
+WHERE o.orderDate.year = 2024 AND o.orderDate.month = 6
+RETURN o.orderId AS orderId, o.orderDate AS placed, o.status AS status
+ORDER BY o.orderDate;
+
+// --> June 2024 only. Also available: .day .hour .minute .quarter .weekday
+
+
+// ---------------------------------------------------------------- 4.17
+// Filter on a RELATIONSHIP property. Name the relationship first (r).
+
+MATCH (o:Order)-[r:CONTAINS]->(p:Product)
+WHERE r.quantity >= 3
+RETURN o.orderId AS orderId, p.name AS product,
+       r.quantity AS qty, r.totalPrice AS lineTotal
+ORDER BY r.quantity DESC;
+
+// --> Bulk lines. The filter is on the relationship, not on either node.
+
+
+// ---------------------------------------------------------------- 4.18
+// Filter on a PATTERN — "does this node have this relationship at all?"
+// This is something SQL needs a subquery for.
+
+MATCH (c:Customer)
+WHERE (c)-[:WROTE]->(:Review)
+RETURN c.name AS customer, c.segment AS segment;
+
+// --> Only customers who have written at least one review.
+
+
+// ---------------------------------------------------------------- 4.19
+// NOT + pattern = "does NOT have this relationship".
+// Extremely useful, and very hard to express in SQL.
+
+MATCH (c:Customer)
+WHERE NOT (c)-[:WROTE]->(:Review)
+RETURN c.name AS customer, c.segment AS segment;
+
+// --> Customers who have never reviewed anything.
+
+
+// ---------------------------------------------------------------- 4.20
+// Putting it together: valuable orders, placed on mobile, that were not cancelled.
+
+MATCH (c:Customer)-[:PLACED]->(o:Order)
+WHERE o.totalAmount > 2000
+  AND o.deviceType = "mobile"
+  AND o.status <> "Cancelled"
+RETURN c.name        AS customer,
+       c.segment     AS segment,
+       o.orderId     AS orderId,
+       o.totalAmount AS amount,
+       o.status      AS status
+ORDER BY o.totalAmount DESC;
+
+
+// ---------------------------------------------------------------------------
+// CHECKPOINT 4 — try these yourself before moving on:
+//   a) All products from the brand "Horizon" priced under $500.
+//   b) All orders with status "Returned" or "Cancelled", newest first.
+//   c) All customers NOT in the VIP segment who live in a state
+//      starting with "N".
+//   d) All products with no reviews at all.  (Hint: NOT (p)<-[:REVIEWS]-())
+// ---------------------------------------------------------------------------
+
+
+//================================================================================
+// SECTION 5 — RETRIEVING AND TRAVERSING
+//================================================================================
+
+// Filtering picks rows. Traversing follows relationships to reach data that is
+// not on the node you started from. This is what a graph database is FOR.
+
+
+// ---------------------------------------------------------------- 5.1
+// DISTINCT removes duplicate rows.
+// Without it, a customer appears once per order they placed.
+
+MATCH (c:Customer)-[:PLACED]->(:Order)
+RETURN c.name AS customer;
+
+// --> 66 rows — one per order, so names repeat.
+
+
+// ---------------------------------------------------------------- 5.2
+
+MATCH (c:Customer)-[:PLACED]->(:Order)
+RETURN DISTINCT c.name AS customer;
+
+// --> 24 rows. One per customer.
+//     Whenever a name repeats unexpectedly, the cause is almost always
+//     that you traversed a relationship that fans out.
+
+
+// ---------------------------------------------------------------- 5.3
+// ORDER BY sorts. DESC for descending, ASC (the default) for ascending.
+
+MATCH (p:Product)
+RETURN p.name AS product, p.price AS price
+ORDER BY p.price DESC
+LIMIT 10;
+
+
+// ---------------------------------------------------------------- 5.4
+// Sort by two keys: brand alphabetically, then price high-to-low within brand.
+
+MATCH (p:Product)
+RETURN p.brand AS brand, p.name AS product, p.price AS price
+ORDER BY p.brand ASC, p.price DESC
+LIMIT 20;
+
+
+// ---------------------------------------------------------------- 5.5
+// SKIP + LIMIT = paging. This is page 2, at 10 rows per page.
+
+MATCH (p:Product)
+RETURN p.name AS product, p.price AS price
+ORDER BY p.price DESC
+SKIP 10 LIMIT 10;
+
+
+// ---------------------------------------------------------------- 5.6
+// ONE HOP: customer to their orders.
+
+MATCH (c:Customer {customerId: 3068})-[:PLACED]->(o:Order)
+RETURN c.name        AS customer,
+       o.orderId     AS orderId,
+       o.orderDate   AS placed,
+       o.totalAmount AS amount,
+       o.status      AS status
+ORDER BY o.orderDate;
+
+// --> Carol Glass's 3 orders.
+
+
+// ---------------------------------------------------------------- 5.7
+// TWO HOPS: customer to the products they bought, via their orders.
+// The Order in the middle is anonymous — we don't need to name what we
+// don't use.
+
+MATCH (c:Customer {customerId: 3068})-[:PLACED]->(:Order)-[:CONTAINS]->(p:Product)
+RETURN DISTINCT p.name AS product, p.brand AS brand, p.price AS price
+ORDER BY p.price DESC;
+
+// --> 15 distinct products.
+
+
+// ---------------------------------------------------------------- 5.8
+// THREE HOPS: customer -> order -> product -> category.
+
+MATCH (c:Customer {customerId: 3068})-[:PLACED]->(:Order)
+      -[:CONTAINS]->(p:Product)-[:IN_CATEGORY]->(cat:Category)
+RETURN DISTINCT cat.name AS category, p.name AS product
+ORDER BY category;
+
+// --> Which categories this customer shops in.
+//     Three relationships followed, in one readable line.
+
+
+// ---------------------------------------------------------------- 5.9
+// Keep the relationship so you can read its properties.
+
+MATCH (c:Customer {customerId: 3068})-[:PLACED]->(o:Order)-[line:CONTAINS]->(p:Product)
+RETURN o.orderId      AS orderId,
+       p.name         AS product,
+       line.quantity  AS qty,
+       line.unitPrice AS unitPrice,
+       line.totalPrice AS lineTotal
+ORDER BY o.orderId, lineTotal DESC;
+
+
+// ---------------------------------------------------------------- 5.10
+// Two separate patterns, comma-separated. Both must match.
+// Here: the customer's reviews AND which product each review is about.
+
+MATCH (c:Customer)-[:WROTE]->(r:Review), (r)-[:REVIEWS]->(p:Product)
+RETURN c.name    AS customer,
+       p.name    AS product,
+       r.rating  AS rating,
+       r.title   AS title
+ORDER BY r.rating
+LIMIT 15;
+
+
+// ---------------------------------------------------------------- 5.11
+// The same thing written as one chained pattern. Usually clearer.
+
+MATCH (c:Customer)-[:WROTE]->(r:Review)-[:REVIEWS]->(p:Product)
+RETURN c.name AS customer, p.name AS product, r.rating AS rating
+ORDER BY r.rating
+LIMIT 15;
+
+
+// ---------------------------------------------------------------- 5.12
+// OPTIONAL MATCH is Cypher's LEFT JOIN. It keeps rows even when the
+// pattern does not match, filling the missing values with null.
+// Compare this with 5.13.
+
+MATCH (c:Customer)
+OPTIONAL MATCH (c)-[:WROTE]->(r:Review)
+RETURN c.name AS customer, r.rating AS rating
+ORDER BY customer
+LIMIT 20;
+
+// --> ALL 24 customers appear. Those with no reviews show null.
+
+
+// ---------------------------------------------------------------- 5.13
+// Plain MATCH drops them instead.
+
+MATCH (c:Customer)-[:WROTE]->(r:Review)
+RETURN c.name AS customer, r.rating AS rating
+ORDER BY customer
+LIMIT 20;
+
+// --> Only customers who HAVE reviewed. The others vanish silently.
+//     Choosing between MATCH and OPTIONAL MATCH is a real decision. Think
+//     about whether "no match" should mean "no row" or "a row with nulls".
+
+
+// ---------------------------------------------------------------- 5.14
+// Variable-length paths. [:PARENT_OF*1..3] means "follow PARENT_OF
+// between 1 and 3 times". This walks DOWN the category tree.
+
+MATCH (top:Category {name: "Electronics"})-[:PARENT_OF*1..3]->(sub:Category)
+RETURN sub.name AS subcategory, sub.level AS level
+ORDER BY sub.level, sub.name;
+
+// --> Everything beneath "Electronics", at any depth.
+//     ALWAYS put an upper bound on the number of hops. An unbounded [*]
+//     can try to walk your entire graph.
+
+
+// ---------------------------------------------------------------- 5.15
+// Walk UP instead, from a deep category to its root, and show the path.
+
+MATCH path = (root:Category)-[:PARENT_OF*0..3]->(leaf:Category {name: "iPhone"})
+WHERE root.level = 1
+RETURN [n IN nodes(path) | n.name] AS breadcrumb, length(path) AS depth;
+
+// --> ["Electronics", "Smartphones", "iPhone"]
+//     [n IN nodes(path) | n.name] is a LIST COMPREHENSION: for each node on
+//     the path, take its name.
+
+
+// ---------------------------------------------------------------- 5.16
+// THE CLASSIC GRAPH QUERY: "customers who bought the same thing I did".
+// Four hops out and back. Note we exclude ourselves.
+
+MATCH (me:Customer {customerId: 3068})-[:PLACED]->(:Order)-[:CONTAINS]->(p:Product)
+      <-[:CONTAINS]-(:Order)<-[:PLACED]-(peer:Customer)
+WHERE peer <> me
+RETURN DISTINCT peer.name AS alsoBought, p.name AS sharedProduct
+ORDER BY alsoBought;
+
+// --> Customers who share a purchase with Carol Glass.
+//     Read the pattern as a shape: out to a product, then back in from
+//     another direction. That "there and back" motion is the heart of
+//     collaborative filtering.
+
+
+// ---------------------------------------------------------------- 5.17
+// One more hop turns that into a RECOMMENDATION: what did those peers buy
+// that I have not?
+
+MATCH (me:Customer {customerId: 3068})-[:PLACED]->(:Order)-[:CONTAINS]->(shared:Product)
+      <-[:CONTAINS]-(:Order)<-[:PLACED]-(peer:Customer)
+      -[:PLACED]->(:Order)-[:CONTAINS]->(rec:Product)
+WHERE peer <> me
+  AND NOT (me)-[:PLACED]->(:Order)-[:CONTAINS]->(rec)
+RETURN DISTINCT rec.name AS recommendation, rec.brand AS brand, rec.price AS price
+ORDER BY recommendation;
+
+// --> A recommendation engine. Six relationships, one query, no joins.
+//     In SQL this is six JOINs over three tables, and it gets slower with
+//     every hop. Here the cost only depends on how many neighbours you touch.
+
+
+// ---------------------------------------------------------------- 5.18
+// collect() gathers many rows into a single list — the opposite of UNWIND.
+
+MATCH (c:Customer)-[:PLACED]->(:Order)-[:CONTAINS]->(p:Product)
+RETURN c.name AS customer, collect(DISTINCT p.name) AS productsBought
+ORDER BY customer
+LIMIT 10;
+
+// --> One row per customer, with a LIST of their products.
+//     Much easier to read than 229 separate rows.
+
+
+// ---------------------------------------------------------------------------
+// CHECKPOINT 5 — try these yourself:
+//   a) All products reviewed with a rating of 1 or 2, with the reviewer's name.
+//   b) Every category that "Electronics" is a parent of, one level down only.
+//   c) For customer 3068, the categories they have bought from, and how
+//      many distinct products in each. (You will need Section 6 for the count.)
+//   d) Customers who have placed an order but never written a review.
+// ---------------------------------------------------------------------------
+
+
+//================================================================================
+// SECTION 6 — AGGREGATION
+//================================================================================
+
+// Aggregation turns many rows into one summary row: counts, sums, averages.
+
+// THE ONE THING YOU MUST UNDERSTAND:
+// Cypher has no GROUP BY. Grouping is IMPLICIT. Every non-aggregate expression
+// in your RETURN becomes a grouping key, automatically.
+
+//    RETURN count(*)                    // one row for everything
+//    RETURN c.segment, count(*)         // one row PER SEGMENT
+
+// If you get more rows than expected, you have an extra non-aggregate column
+// in your RETURN. That is the cause, essentially every time.
+
+
+// ---------------------------------------------------------------- 6.1
+// count(*) counts rows.
+
+MATCH (c:Customer)
+RETURN count(*) AS totalCustomers;
+
+// --> 24
+
+
+// ---------------------------------------------------------------- 6.2
+// count(*) counts ROWS. count(x) counts NON-NULL VALUES of x.
+// The difference shows up with OPTIONAL MATCH.
+
+MATCH (c:Customer)
+OPTIONAL MATCH (c)-[:WROTE]->(r:Review)
+RETURN count(*)  AS rows,
+       count(r)  AS actualReviews,
+       count(DISTINCT c) AS customers;
+
+// --> rows > actualReviews, because customers with no reviews produce a
+//     row where r is null. count(r) skips those nulls; count(*) does not.
+
+
+// ---------------------------------------------------------------- 6.3
+// DISTINCT inside an aggregate counts unique values only.
+
+MATCH (p:Product)
+RETURN count(*)                 AS products,
+       count(DISTINCT p.brand)  AS distinctBrands,
+       count(DISTINCT p.category) AS distinctCategories;
+
+// --> 186 products, 84 brands, 44 categories.
+
+
+// ---------------------------------------------------------------- 6.4
+// IMPLICIT GROUPING. Add a non-aggregate column and you get one row per
+// distinct value of it. No GROUP BY clause is needed — or allowed.
+
+MATCH (o:Order)
+RETURN o.status AS status, count(*) AS orders
+ORDER BY orders DESC;
+
+// --> Delivered 25, Shipped 19, Cancelled 9, Returned 9, Processing 4
+//     o.status is not an aggregate, so it became the grouping key.
+
+
+// ---------------------------------------------------------------- 6.5
+// Same idea on customers.
+
+MATCH (c:Customer)
+RETURN c.segment AS segment, count(*) AS customers
+ORDER BY customers DESC;
+
+// --> VIP 18, At-Risk 2, Churned 2, New 2
+
+
+// ---------------------------------------------------------------- 6.6
+// sum() adds numbers up.
+
+MATCH (o:Order)
+WHERE o.status IN ["Delivered", "Shipped"]
+RETURN count(*)             AS orders,
+       sum(o.totalAmount)   AS totalRevenue;
+
+// --> 44 orders, 167129.79
+
+
+// ---------------------------------------------------------------- 6.7
+// avg(), min() and max(). round() tidies the decimals.
+
+MATCH (o:Order)
+RETURN round(avg(o.totalAmount), 2) AS avgOrderValue,
+       min(o.totalAmount)           AS smallestOrder,
+       max(o.totalAmount)           AS largestOrder,
+       count(*)                     AS orders;
+
+// --> avg 3457.69, min 16.86, max 13502.87, over 66 orders.
+
+
+// ---------------------------------------------------------------- 6.8
+// Several aggregates, grouped by one key. This is the shape of most
+// real analytics queries you will ever write.
+
+MATCH (c:Customer)-[:PLACED]->(o:Order)
+RETURN c.segment                    AS segment,
+       count(*)                     AS orders,
+       round(sum(o.totalAmount), 2) AS revenue,
+       round(avg(o.totalAmount), 2) AS avgOrderValue
+ORDER BY revenue DESC;
+
+// --> VIP 54 orders, avg 3844.32
+//     New 4 orders, avg 436.38
+//     New customers spend far less per order. That is a real finding from
+//     your data, produced by one query.
+
+
+// ---------------------------------------------------------------- 6.9
+// Aggregate over a relationship property. Which products earn the most?
+
+MATCH (:Order)-[line:CONTAINS]->(p:Product)
+RETURN p.name                       AS product,
+       count(*)                     AS timesOrdered,
+       sum(line.quantity)           AS unitsSold,
+       round(sum(line.totalPrice), 2) AS revenue
+ORDER BY revenue DESC
+LIMIT 10;
+
+// --> Top earner: Flex Sofa at 12313.44
+
+
+// ---------------------------------------------------------------- 6.10
+// Which customers spend the most? Note we count DISTINCT orders — without
+// DISTINCT, an order with 3 lines would be counted three times.
+
+MATCH (c:Customer)-[:PLACED]->(o:Order)-[line:CONTAINS]->(:Product)
+RETURN c.name                        AS customer,
+       c.segment                     AS segment,
+       count(DISTINCT o)             AS orders,
+       round(sum(line.totalPrice), 2) AS spend
+ORDER BY spend DESC
+LIMIT 10;
+
+// --> Top spender: Jessica Johnson at 24338.54
+//     The DISTINCT on orders matters. Take it out and compare.
+
+
+// ---------------------------------------------------------------- 6.11
+// Average rating per product, from the Review nodes.
+
+MATCH (r:Review)-[:REVIEWS]->(p:Product)
+RETURN p.name                  AS product,
+       count(r)                AS reviews,
+       round(avg(r.rating), 2) AS avgRating
+ORDER BY avgRating DESC, reviews DESC
+LIMIT 15;
+
+
+// ---------------------------------------------------------------- 6.12
+// Overall review statistics.
+
+MATCH (r:Review)
+RETURN count(*)                AS totalReviews,
+       round(avg(r.rating), 2) AS avgRating,
+       min(r.rating)           AS worst,
+       max(r.rating)           AS best;
+
+// --> 63 reviews, average 4.03, from 1 to 5.
+
+
+// ---------------------------------------------------------------- 6.13
+// Distribution: how many reviews at each star rating?
+
+MATCH (r:Review)
+RETURN r.rating AS stars, count(*) AS reviews
+ORDER BY stars DESC;
+
+// --> 5 stars: 25, 4 stars: 24, 3 stars: 7, 2 stars: 5, 1 stars: 2
+
+
+// ---------------------------------------------------------------- 6.14
+// WITH is the key to multi-stage queries. It pipes the result of one part
+// into the next, and it is where you filter on an AGGREGATE.
+// (In SQL this would be HAVING. Cypher has no HAVING — it has WITH.)
+
+MATCH (c:Customer)-[:PLACED]->(o:Order)
+WITH c, count(*) AS orders, sum(o.totalAmount) AS spend
+WHERE orders >= 3
+RETURN c.name           AS customer,
+       orders,
+       round(spend, 2)  AS spend
+ORDER BY spend DESC;
+
+// --> Only customers with 3 or more orders.
+//     WHERE after WITH filters on the aggregate. WHERE after MATCH cannot —
+//     the aggregate does not exist yet at that point.
+
+
+// ---------------------------------------------------------------- 6.15
+// Aggregate, then keep traversing. This is what WITH really unlocks.
+// Find the top 5 spenders, THEN go and fetch what they bought.
+
+MATCH (c:Customer)-[:PLACED]->(o:Order)
+WITH c, sum(o.totalAmount) AS spend
+ORDER BY spend DESC
+LIMIT 5
+MATCH (c)-[:PLACED]->(:Order)-[:CONTAINS]->(p:Product)
+RETURN c.name                    AS customer,
+       round(spend, 2)           AS spend,
+       count(DISTINCT p)         AS distinctProducts,
+       collect(DISTINCT p.brand)[0..5] AS someBrands
+ORDER BY spend DESC;
+
+// --> The aggregate is computed first, then used as a starting point for
+//     more traversal. You cannot do this in a single SQL SELECT.
+
+
+// ---------------------------------------------------------------- 6.16
+// Group by two keys at once — just list both non-aggregate columns.
+
+MATCH (c:Customer)-[:PLACED]->(o:Order)
+RETURN c.segment  AS segment,
+       o.status   AS status,
+       count(*)   AS orders
+ORDER BY segment, orders DESC;
+
+// --> One row per (segment, status) combination.
+
+
+// ---------------------------------------------------------------- 6.17
+// Orders over time. Group by year and month.
+
+MATCH (o:Order)
+RETURN o.orderDate.year  AS year,
+       o.orderDate.month AS month,
+       count(*)          AS orders,
+       round(sum(o.totalAmount), 2) AS revenue
+ORDER BY year, month;
+
+// --> A monthly trend, straight out of the datetime property.
+
+
+// ---------------------------------------------------------------- 6.18
+// Percentage of total. Compute the total FIRST with WITH, then use it.
+
+MATCH (o:Order)
+WITH count(*) AS grandTotal
+MATCH (o:Order)
+RETURN o.status AS status,
+       count(*) AS orders,
+       round(100.0 * count(*) / grandTotal, 1) AS percentage
+ORDER BY orders DESC;
+
+// --> Percentages summing to 100. Note 100.0 not 100 — integer division
+//     would round everything down to 0.
+
+
+// ---------------------------------------------------------------- 6.19
+// A count subquery: count { } counts matches WITHOUT creating extra rows.
+// Compare this to the alternative below.
+
+MATCH (p:Product)
+WHERE p.price > 500
+RETURN p.name AS product,
+       p.price AS price,
+       count { (p)<-[:CONTAINS]-(:Order) }   AS timesOrdered,
+       count { (p)<-[:REVIEWS]-(:Review) }   AS reviewCount
+ORDER BY timesOrdered DESC
+LIMIT 15;
+
+// --> Two independent counts on one row. Doing this with two MATCH clauses
+//     would multiply the rows together and give wrong numbers.
+
+
+// ---------------------------------------------------------------- 6.20
+// Putting everything together: a category performance report.
+
+MATCH (cat:Category)<-[:IN_CATEGORY]-(p:Product)<-[line:CONTAINS]-(o:Order)
+WHERE o.status IN ["Delivered", "Shipped"]
+WITH cat,
+     count(DISTINCT p)              AS products,
+     count(DISTINCT o)              AS orders,
+     sum(line.quantity)             AS unitsSold,
+     round(sum(line.totalPrice), 2) AS revenue
+WHERE revenue > 500
+RETURN cat.name AS category, products, orders, unitsSold, revenue,
+       round(revenue / orders, 2) AS revenuePerOrder
+ORDER BY revenue DESC
+LIMIT 15;
+
+// --> A genuine business report: five aggregates, a filter on one of them,
+//     and a derived metric. If you can read this query, you can read Cypher.
+
+
+// ---------------------------------------------------------------------------
+// CHECKPOINT 6 — try these yourself:
+//   a) How many orders did each customer place? Highest first.
+//   b) Total revenue per brand, for delivered orders only.
+//   c) Which products have an average review rating below 3? Include the
+//      number of reviews.
+//   d) Average number of items per order.  (Hint: count the CONTAINS
+//      relationships, then average.)
+//   e) For each customer segment, the number of customers AND the number of
+//      distinct products they have bought between them.
+// ---------------------------------------------------------------------------
+
+
+//================================================================================
+// WHERE TO GO NEXT
+//================================================================================
+
+// You now have the fundamentals: creating, connecting, filtering, traversing
+// and aggregating. That covers most of what day-to-day Cypher actually is.
+
+// The natural next steps, roughly in order:
+
+//   1. MERGE in depth      — ON CREATE SET / ON MATCH SET for safe upserts
+//   2. More list functions — reduce(), list and pattern comprehensions
+//   3. Subqueries          — CALL { } and EXISTS { }
+//   4. shortestPath()      — finding connections between distant nodes
+//   5. Indexes and PROFILE — reading a query plan and making things fast
+//   6. Graph modelling     — when to use a node vs a property vs a relationship
+//   7. Neo4j from Python   — the driver, parameters, and loading real data
+
+// Items 1-6 are covered in the companion notebook. Item 7 is where you go
+// once the Cypher above feels comfortable.
+
+
+//================================================================================
+// QUICK REFERENCE
+//================================================================================
+
+// READING
+//   MATCH (n:Label)                      find nodes
+//   MATCH (n:Label {prop: value})        find with inline equality filter
+//   MATCH (a)-[:REL]->(b)                follow a relationship
+//   MATCH (a)-[:REL]-(b)                 either direction
+//   MATCH (a)-[r:REL]->(b)               name it to read r.property
+//   MATCH (a)-[:REL*1..3]->(b)           1 to 3 hops (always bound it)
+//   MATCH path = (a)-[:REL]->(b)         capture the whole path
+//   OPTIONAL MATCH ...                   keep rows even when it doesn't match
+//   RETURN x AS name                     name your columns
+//   ORDER BY x DESC / SKIP n / LIMIT n   sort and page
+//   DISTINCT                             remove duplicate rows
+
+// FILTERING
+//   WHERE n.p = 1                        = <> < > <= >=
+//   WHERE n.p IN [1, 2, 3]               membership
+//   WHERE n.name STARTS WITH "A"         also ENDS WITH, CONTAINS
+//   WHERE n.name =~ "(?i).*abc.*"        regex, (?i) = ignore case
+//   WHERE n.p IS NULL / IS NOT NULL      missing values
+//   WHERE (a)-[:REL]->(b)                pattern as a true/false test
+//   WHERE NOT (a)-[:REL]->(b)            negated pattern
+//   WHERE n.date.year = 2024             .year .month .day .hour .quarter
+
+// WRITING
+//   CREATE (n:Label {p: 1})              always creates (can duplicate)
+//   MERGE  (n:Label {key: 1})            find-or-create (safe to re-run)
+//   SET n.p = 1                          add or update a property
+//   SET n:NewLabel                       add a label
+//   REMOVE n.p / REMOVE n:Label          take away
+//   DELETE r                             delete a relationship
+//   DETACH DELETE n                      delete a node and its relationships
+//   UNWIND [...] AS row                  turn a list into rows
+
+// AGGREGATING  (grouping is implicit — no GROUP BY exists)
+//   count(*)                             count rows
+//   count(x) / count(DISTINCT x)         count non-null / unique values
+//   sum() avg() min() max()              the usual
+//   round(x, 2)                          tidy decimals
+//   collect(x)                           gather rows into a list
+//   count { (n)-[:REL]->() }             count without fanning out rows
+//   WITH ... WHERE ...                   this is HAVING
+
+// INSPECTING
+//   labels(n) / type(r) / keys(n)        what is this?
+//   properties(n)                        all properties as a map
+//   nodes(path) / relationships(path)    what is on this path?
+//   length(path)                         number of RELATIONSHIPS
+//   SHOW CONSTRAINTS / SHOW INDEXES      what is defined?
+
+// RESET
+//   MATCH (n) DETACH DELETE n            empty the whole database
+
+//================================================================================
+// END — 401 nodes, 661 relationships, 6 sections.
+//================================================================================
