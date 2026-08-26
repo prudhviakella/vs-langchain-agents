@@ -14,6 +14,8 @@ before it.
 | 07 | `07-graph-databases` | Neo4j and Cypher, twelve parts and a capstone |
 | 08 | `08-graphrag` | A knowledge graph over the documents from module 05 |
 | 09 | `09-rag-at-scale-aws` | Module 05 running a whole corpus on Fargate |
+| 10 | `10-a2a-protocol` | Agents talking to agents across a network |
+| 11 | `11-multi-agent-project` | Four agents over the data from 05 and 08 |
 
 ## Setup
 
@@ -35,6 +37,8 @@ pip install -r requirements.txt
 | 07 | a free Neo4j Aura instance |
 | 08 | all of the above, and the index from module 05 |
 | 09 | an AWS account, and a Fargate vCPU quota above 6 |
+| 10 | nothing beyond Python — it runs entirely on localhost |
+| 11 | modules 05 and 08 running, plus an OpenAI or Anthropic key |
 
 ## How 05 through 09 fit together
 

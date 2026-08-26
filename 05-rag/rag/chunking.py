@@ -1,8 +1,53 @@
 """Turning a parsed document into the records that will be embedded.
 
-Three things happen here, each replacing machinery that pipelines commonly
-hand-write: structure-aware chunking, heading context folded into the embedded
-string, and one summary chunk per table.
+    parsed document
+          |
+          v
+    HybridChunker            splits on structure, then on a token budget
+          |
+          v
+    contextualize()          prepends the heading path to each chunk
+          |
+          v
+    pass 1: one record per chunk
+          |
+          v
+    pass 2: one summary per table      <- extra records, not replacements
+          |
+          v
+    pass 3: reading order, prev/next links, size limits
+          |
+          v
+      records[]
+          |
+          v
+    embedding model  ->  vectors  ->  Pinecone
+
+WHAT THIS FILE DOES NOT DO
+
+    It does NOT call the embedding model.
+    It does NOT write to Pinecone.
+
+It prepares records. `embedding.py` turns them into vectors and `sync.py`
+writes them. One PDF does not produce one embedding — it produces one per
+record, so a 7-page report with 3 tables becomes roughly 25 vectors.
+
+A LARGE TABLE IS NOT FORCED INTO ONE CHUNK
+
+    logical table
+          |
+     +----+----+
+     v    v    v
+   chunk chunk chunk        physical fragments, each its own record
+     +----+----+
+          |
+     same table_ref
+          |
+          v
+     ONE summary            an additional record, sharing their table_id
+
+The fragments hold the exact values. The summary holds the words someone would
+search for. Neither replaces the other.
 
 Chunk identity is content-addressed. That single decision is what makes the
 incremental sync in `sync.py` possible, and what makes a retried run safe.
@@ -23,6 +68,14 @@ from .tables import (needs_summary, summarize_table, summarize_table_image,
 def content_type(chunk) -> str:
     """Coarse type: text, table, table_summary, figure, formula or code.
 
+        chunk  ->  read its element labels  ->  first special type wins
+
+    This does NOT read or summarise the content. It answers one question:
+    what KIND of thing is this, so a query can filter on it.
+
+    Order matters — a chunk holding a table and its caption is a table, not
+    text.
+
     This is what makes filtering possible at query time — "only tables", "only
     figures". It is also how you would tell apart a pipeline that handles prose well
     and tables badly from one that is mediocre at both, which look identical in a
@@ -41,6 +94,16 @@ def content_type(chunk) -> str:
 
 def document_date(pdf: Path, head: str) -> str:
     """Publication date of the document, for filtering stale content at query time.
+
+        opening text  ->  find a year  ->  find a quarter  ->  "2025" or "2025-Q3"
+                                                    |
+                                            none found?
+                                                    |
+                                          the PDF's own mtime
+
+    NOT the same as `ingested_at`. This is when the document is ABOUT; that is
+    when we processed it. A corpus accumulates versions of the same report, and
+    "relevant but two years old" is a failure users hit constantly.
 
     Distinct from ingestion time. A corpus accumulates versions of the same report,
     and "semantically relevant but from two years ago" is a failure mode users hit
@@ -62,6 +125,19 @@ def build_records(doc, pdf: Path, doc_id: str, doc_date: str,
                   figure_uris: dict[str, str] | None = None) -> list[dict]:
     """Turn a parsed document into the records that will be embedded and indexed.
 
+        1  configure the chunker        structure first, then token budget
+        2  chunk the document
+        3  index elements by ref        for recovering a broken table
+        4  track repeated content       so identical text stays distinct
+        5  pass 1                       one record per chunk
+        6  pass 2                       one summary per table
+        7  pass 3                       reading order and prev/next links
+        8  metadata budget              Pinecone caps it at 40 KB
+        9  oversized chunks             truncate, and say so
+       10  diagnostics                  what went wrong, before anyone asks
+
+    Returns records. Does NOT embed them and does NOT write them anywhere.
+
     Three things happen here, each replacing machinery that pipelines commonly
     hand-write:
 
@@ -77,6 +153,17 @@ def build_records(doc, pdf: Path, doc_id: str, doc_date: str,
     3. Tables get one extra chunk each: a summary carrying the vocabulary the raw
        grid lacks.
     """
+    # ═════════════════════════════════════════════════════════════════════
+    # STEP 1 — configure the chunker
+    #
+    #   tokenizer            how to count            the embedding model's own
+    #   max_tokens           how big a chunk may be  measured in tokens
+    #   serializer_provider  how elements become text
+    #
+    # Sizing in characters is a proxy that fails silently: the API accepts an
+    # oversized input, embeds the first N tokens, and returns a valid-looking
+    # vector for half a chunk.
+    # ═════════════════════════════════════════════════════════════════════
     from docling.chunking import HybridChunker
     from docling_core.transforms.chunker.hierarchical_chunker import (
         ChunkingDocSerializer, ChunkingSerializerProvider,
@@ -109,10 +196,25 @@ def build_records(doc, pdf: Path, doc_id: str, doc_date: str,
         merge_peers=True,
     )
 
+    # ═════════════════════════════════════════════════════════════════════
+    # STEP 2 — chunk the document
+    #
+    # These are Docling chunk objects, not our records yet. Nothing has been
+    # embedded.
+    # ═════════════════════════════════════════════════════════════════════
     chunks = list(chunker.chunk(dl_doc=doc))
     tables = table_markdown(doc)
     ingested_at = int(datetime.now(timezone.utc).timestamp())
 
+    # ═════════════════════════════════════════════════════════════════════
+    # STEP 3 — index the original elements by reference
+    #
+    # NOT for grouping table fragments — `table_groups` does that. This exists
+    # for one case: the extracted markdown is wrong, and we need the original
+    # element back so we can render it and look at it.
+    #
+    #     table_ref  ->  items_by_ref[ref]  ->  the original TableItem
+    # ═════════════════════════════════════════════════════════════════════
     # Every element by ref, so a broken table can be re-read as an image.
     items_by_ref = {}
     for item, _ in doc.iterate_items():
@@ -122,6 +224,14 @@ def build_records(doc, pdf: Path, doc_id: str, doc_date: str,
 
     # How many times each content hash has been seen in this document, so genuinely
     # repeated text gets distinct ids. See the chunk_id note below.
+    # ═════════════════════════════════════════════════════════════════════
+    # STEP 4 — count repeated content
+    #
+    # The same text can legitimately appear several times: a disclaimer on
+    # every page. Identical text hashes identically, so without a counter all
+    # three copies would collapse into one record and two page numbers would
+    # be lost.
+    # ═════════════════════════════════════════════════════════════════════
     occurrences: defaultdict = defaultdict(int)
 
     def make(text: str, meta_extra: dict, position: int) -> dict:
@@ -162,6 +272,17 @@ def build_records(doc, pdf: Path, doc_id: str, doc_date: str,
             **meta_extra,
         }}
 
+    # ═════════════════════════════════════════════════════════════════════
+    # STEP 5 — pass 1: one record per chunk
+    #
+    # Two structures are built here and they are not the same thing:
+    #
+    #   records       every physical chunk in the document
+    #   table_groups  those chunks that belong to a table, grouped by table
+    #
+    # A large table appears once in `records` per fragment, and once in
+    # `table_groups` as a list of all its fragments.
+    # ═════════════════════════════════════════════════════════════════════
     records: list[dict] = []
     table_groups: defaultdict = defaultdict(list)
 
@@ -211,6 +332,17 @@ def build_records(doc, pdf: Path, doc_id: str, doc_date: str,
     # ── Pass 2: one summary per table ────────────────────────────────────────
     # Iterates table_groups, not chunks: one summary per table, however many
     # fragments the chunker produced from it.
+    # ═════════════════════════════════════════════════════════════════════
+    # STEP 6 — pass 2: one summary per table
+    #
+    # Iterates table_groups, not chunks. However many fragments the chunker
+    # produced from one table, that table gets ONE summary — read from the
+    # complete grid on the document object, not stitched back together from
+    # the fragments.
+    #
+    # The summary is an ADDITIONAL record. The fragments stay exactly as they
+    # are.
+    # ═════════════════════════════════════════════════════════════════════
     summarised, skipped, repaired = 0, [], []
 
     for ref, fragments in table_groups.items():
@@ -277,6 +409,19 @@ def build_records(doc, pdf: Path, doc_id: str, doc_date: str,
     # Summaries were appended at the end of the list but carry the position of their
     # table's first fragment. Sorting on (position, is-not-a-summary) puts each
     # summary immediately before the rows it describes.
+    # ═════════════════════════════════════════════════════════════════════
+    # STEP 7 — pass 3: reading order
+    #
+    # Summaries were appended at the end but carry the position of their
+    # table's first fragment. Sorting puts each one immediately before the
+    # rows it describes:
+    #
+    #     section chunk
+    #     table summary        <- moved here
+    #     table fragment 1
+    #     table fragment 2
+    #     paragraph chunk
+    # ═════════════════════════════════════════════════════════════════════
     records.sort(key=lambda r: (r["meta"]["position"],
                                 r["meta"]["content_type"] != "table_summary"))
 
@@ -299,6 +444,17 @@ def build_records(doc, pdf: Path, doc_id: str, doc_date: str,
     # cap, measure what the structural fields cost and give the body the remainder,
     # with a safety margin. The text is stored because the reranker and the LLM both
     # read it; at much larger scale the pattern flips to storing a pointer.
+    # ═════════════════════════════════════════════════════════════════════
+    # STEP 8 — metadata budget
+    #
+    # Pinecone caps metadata at 40 KB per vector. Rather than guessing a
+    # character limit, measure what the structural fields actually cost and
+    # give the text whatever is left.
+    #
+    #   record["text"]          the canonical text, embedded
+    #   record["meta"]["text"]  a bounded copy, so retrieval and reranking can
+    #                           read it straight off the query result
+    # ═════════════════════════════════════════════════════════════════════
     overhead = len(json.dumps({**records[0]["meta"], "text": ""}).encode())
     budget = max(512, PINECONE_METADATA_BYTES - overhead - 1024)
     for record in records:
@@ -310,6 +466,16 @@ def build_records(doc, pdf: Path, doc_id: str, doc_date: str,
     # here would abort a 250-page document over a single row. Truncating loses that
     # one item and keeps everything else, and the flag makes the loss visible rather
     # than silent.
+    # ═════════════════════════════════════════════════════════════════════
+    # STEP 9 — oversized chunks
+    #
+    # The chunker respects the budget but cannot split an atomic element
+    # smaller than itself: one enormous table row, one very long code block.
+    #
+    # Truncating loses that one item; raising would abort a 250-page document
+    # over a single row. The flag makes the loss visible instead of silent.
+    # Ideally this list is empty.
+    # ═════════════════════════════════════════════════════════════════════
     over = [r for r in records if r["meta"]["n_tokens"] > CHUNK_TOKENS]
     for record in over:
         record["text"] = ENCODING.decode(
@@ -318,6 +484,16 @@ def build_records(doc, pdf: Path, doc_id: str, doc_date: str,
         record["meta"]["truncated"] = True
 
     # ── Report ───────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # STEP 10 — diagnostics
+    #
+    # Not "document processed successfully". How many chunks, how many tables
+    # got summaries, what was skipped, what was repaired, what was truncated.
+    #
+    # Extraction and chunking fail quietly. This is where that becomes visible,
+    # before the data reaches retrieval and someone wonders why the answers
+    # are wrong.
+    # ═════════════════════════════════════════════════════════════════════
     types = Counter(r["meta"]["content_type"] for r in records)
     print(f"  {len(records)} chunks ({summarised} of {len(tables)} tables "
           f"summarised)", flush=True)

@@ -1,5 +1,34 @@
 """Embedding, with a cache keyed on content.
 
+    texts[]
+       |
+       v
+    hash each one            sha256(model + text)
+       |
+       v
+    cached?  --yes-->  read from disk
+       |
+      no
+       |
+       v
+    batch by token count and by count
+       |
+       v
+    OpenAI embeddings API
+       |
+       v
+    write to cache  ->  ndarray
+
+THE CACHE KEY IS (model, text), AND THAT MATTERS
+
+The key fully determines the result, so this cache cannot go stale. Contrast a
+cache keyed on a filename, where changing a setting returns work made under the
+old one and the change appears to have done nothing.
+
+Returns a numpy array, NOT lists. Seven times less memory at corpus scale, and
+`sync.py` calls `.tolist()` at the point of upsert.
+
+
 The cache is what makes experimentation free. Re-running after a chunking or
 retrieval change re-embeds nothing, and boilerplate shared across documents is
 embedded once for the whole corpus.

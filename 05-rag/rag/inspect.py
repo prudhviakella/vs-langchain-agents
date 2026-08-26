@@ -1,5 +1,29 @@
 """Verifying the parse, before anything is chunked or embedded.
 
+    parsed document
+          |
+          v
+    inspect()                counts, printed, with warnings
+          |
+          v
+    write_extraction_report()   every element, readable, next to the PDF
+          |
+          v
+      you read it
+          |
+          v
+    only then: chunk and embed
+
+WHY THIS EXISTS
+
+Extraction failures do NOT raise. A setting left off yields an empty annotation
+or a placeholder, every later stage runs happily on top of it, and you get an
+index that looks complete and is missing its tables or its equations.
+
+Nothing downstream can detect that. This is the only place it becomes visible,
+and it runs before any money is spent on embeddings.
+
+
 Extraction failures do not raise. A disabled enrichment yields an empty annotation
 or a placeholder, and every later stage runs happily on top of it, producing an
 index that looks complete and is missing its tables or its equations. Nothing

@@ -1,20 +1,47 @@
 """Document ingestion into a vector index.
 
-    from rag import config, docling_io, chunking, sync
+    PDF
+     |
+     v
+   docling_io.py     six models -> a DoclingDocument
+     |
+     v
+   inspect.py        did it work? counts, warnings, a readable report
+     |
+     v
+   tables.py         serialise, check the grid, summarise
+     |
+     v
+   chunking.py       split, add heading context, one summary per table
+     |
+     v
+   embedding.py      records -> vectors, cached by content
+     |
+     v
+   sync.py           what changed? added / removed / moved / unchanged
+     |
+     v
+   index.py          Pinecone, and the manifest both halves must agree on
 
-Modules, in the order the pipeline uses them:
+   retrieval.py      the other direction: question -> passages -> answer
 
-    config       every setting both halves must agree on
-    clients      API clients and the probed embedding dimension
-    docling_io   parsing a PDF, and reading the objects Docling returns
-    inspect      verifying the parse, and the readable reports
-    tables       table serialisation, structure checks, summaries
-    chunking     records, metadata, and table summary chunks
-    embedding    embedding with a content-addressed cache
-    index        index access and the manifest
-    sync         the three-way diff that makes re-ingestion cheap
-    retrieval    searching the index and answering from what comes back
-    audit        the DynamoDB trail, when running on AWS
+Supporting:
+   config.py         every setting both halves must agree on
+   clients.py        API clients, and the probed embedding dimension
+   audit.py          the DynamoDB trail, when running on AWS
+
+THE IDEA THAT SHAPES ALL OF IT
+
+When this pipeline goes wrong it usually does not crash. A setting left off
+means an equation becomes a placeholder, a chart never gets described, or a
+table comes out with a broken grid — and every step after that runs perfectly
+happily on top of it.
+
+You end up with an index that looks complete and is missing content. Nothing
+downstream can detect it.
+
+So each stage has a checkpoint, and `inspect.py` writes reports you read next
+to the original PDF before anything is embedded.
 
 The notebooks call these in order. The same package runs on AWS unchanged.
 """

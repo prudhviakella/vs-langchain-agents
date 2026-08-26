@@ -1,5 +1,26 @@
 """Vector index access, and the manifest that keeps both halves in agreement.
 
+    ingestion                          retrieval
+        |                                  |
+        v                                  v
+    write_manifest()  --> manifest --> read_manifest()
+                                           |
+                                     settings match?
+                                        |     |
+                                       yes    no
+                                        |     |
+                                        v     v
+                                     proceed  RAISE
+
+WHY IT RAISES RATHER THAN WARNS
+
+Query an index with the wrong embedding model and nothing breaks. You get
+results, with scores that look reasonable, that are meaningless.
+
+A warning gets read once and ignored. This failure has no other symptom, so it
+has to stop you.
+
+
 The manifest is the seam between ingestion and retrieval. Ingestion records how the
 index was built; retrieval reads it and refuses to run if its own configuration
 disagrees. Without it the mismatch is invisible: the query returns results, the

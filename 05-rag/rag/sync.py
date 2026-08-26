@@ -1,5 +1,34 @@
 """Reconciling the index with a freshly parsed document.
 
+    what is in the index          what we just parsed
+            |                             |
+            +-------------+---------------+
+                          |
+                          v
+                    set difference
+                          |
+        +-----------+-----+-----+-----------+
+        |           |           |           |
+        v           v           v           v
+    unchanged     added      removed    moved only
+        |           |           |           |
+     do nothing  embed +     delete     update metadata,
+                 upsert                 no re-embedding
+
+WHY THIS IS A DIFFERENCE AND NOT A REBUILD
+
+Chunk ids come from chunk text. Edit one section of a 200-page report and a
+handful of ids change while nearly two hundred stay identical — so embedding
+cost tracks what changed, not document size.
+
+The fourth case is the one people miss: text unchanged, position shifted
+because a paragraph was inserted above it. The vector is still correct, so it
+needs a metadata rewrite and no embedding call at all.
+
+This is also what makes a retry safe. A duplicate run upserts identical vectors
+and deletes nothing.
+
+
 Because chunk ids are derived from chunk text, re-ingestion is a set difference
 rather than a rebuild. Editing one section of a 200-page report means a handful of
 added and removed chunks against nearly two hundred untouched ones, so embedding

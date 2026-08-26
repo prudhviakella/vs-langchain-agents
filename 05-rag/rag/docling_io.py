@@ -1,5 +1,34 @@
 """Parsing a PDF, and reading the objects Docling returns.
 
+    PDF
+     |
+     v
+   six models, in order
+     |
+     +--  layout          finds the boxes, labels them, sets reading order
+     +--  TableFormer     rows and columns inside a table box
+     +--  OCR             text on scanned pages with no text layer
+     +--  classifier      chart / photo / logo / diagram
+     +--  CodeFormula     equations and code
+     +--  vision model    writes each chart's description        <- costs money
+     |
+     v
+   DoclingDocument       a graph of typed objects, not a string
+
+WHAT THIS FILE DOES NOT DO
+
+    It does NOT chunk.
+    It does NOT embed.
+    It does NOT decide what is worth keeping.
+
+It returns the parsed document. Everything after that is `inspect.py`,
+`tables.py` and `chunking.py`.
+
+THE TRAP: almost every enrichment is OFF by default. A default
+PdfPipelineOptions() gives you text and little else — an equation becomes the
+placeholder `formula-not-decoded` and its content is gone, with no error.
+
+
 "Parsing" is several models in sequence — layout analysis, table structure, OCR,
 figure classification, formula reading, chart extraction, and a remote vision model
 for figure descriptions. `build_pipeline_options` documents which is which and what

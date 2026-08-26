@@ -1,5 +1,37 @@
 """Reading tables, judging whether the parse worked, and describing them.
 
+    TableItem
+        |
+        v
+    export_to_markdown()
+        |
+        v
+    table_looks_broken()
+        |
+     +--+--+
+     |     |
+    no    yes
+     |     |
+     v     v
+  summarise   render the table as an image
+  the text    and describe what it LOOKS like
+     |     |
+     +--+--+
+        |
+        v
+    one summary, plus the raw fragments, sharing a table_id
+
+WHY A TABLE NEEDS A SUMMARY AT ALL
+
+A grid of numbers shares almost no vocabulary with "how did revenue grow" —
+the words revenue and grow appear in no cell. Embedding the grid alone leaves
+the table in the index and unreachable.
+
+The summary supplies the missing words. It does NOT replace the rows: the
+fragments stay, carrying the exact values, and retrieval walks from one to the
+other through `table_id`.
+
+
 A grid of numbers shares almost no vocabulary with a question like "how did revenue
 grow" — those words appear in no cell. Embedding the grid alone leaves the table in
 the index and unreachable. The summary supplies the missing vocabulary; the raw rows

@@ -1,0 +1,7 @@
+langchain>=1.0
+langchain-openai>=0.2
+langchain-anthropic>=0.3
+aiohttp>=3.9
+pinecone>=6.0
+neo4j>=5.20
+tiktoken>=0.8
