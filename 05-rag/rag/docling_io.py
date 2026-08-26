@@ -176,6 +176,7 @@ def build_pipeline_options():
     # Each flag switches on a model. See parse_pdf's docstring for what each one
     # does and where its failures show up.
     requested = {
+        "do_ocr": False,
         # CodeFormula. Equations become LaTeX rather than `formula-not-decoded`.
         "do_formula_enrichment": True,
         # CodeFormula again — same model reads code blocks and detects the language.
