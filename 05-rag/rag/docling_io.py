@@ -45,8 +45,9 @@ import time
 import warnings
 from pathlib import Path
 
-from .config import (FIGURE_AREA_THRESHOLD, FIGURE_PROMPT, FIGURE_RENDER_SCALE,
-                     VISION_MODEL)
+from .config import (DO_CHART_EXTRACTION, DO_CLASSIFICATION, DO_CODE,
+                     DO_FORMULA, FIGURE_AREA_THRESHOLD, FIGURE_PROMPT,
+                     FIGURE_RENDER_SCALE, TABLE_MODE_ACCURATE, VISION_MODEL)
 
 def picture_annotations(item) -> list:
     """Annotations attached to a picture, across docling versions."""
@@ -171,18 +172,21 @@ def build_pipeline_options():
     # constantly — and it is still the stage most likely to produce a wrong grid,
     # which is why table_looks_broken() exists.
     opts.do_table_structure = True
-    opts.table_structure_options.mode = TableFormerMode.ACCURATE
+    opts.table_structure_options.mode = (TableFormerMode.ACCURATE
+                                         if TABLE_MODE_ACCURATE
+                                         else TableFormerMode.FAST)
 
     # Each flag switches on a model. See parse_pdf's docstring for what each one
     # does and where its failures show up.
     requested = {
-        "do_ocr": False,
         # CodeFormula. Equations become LaTeX rather than `formula-not-decoded`.
-        "do_formula_enrichment": True,
-        # CodeFormula again — same model reads code blocks and detects the language.
-        "do_code_enrichment": True,
-        # DocumentFigureClassifier. Tags each picture chart / photo / logo / diagram.
-        "do_picture_classification": True,
+        # Off is correct for a corpus with no equations — it is a model pass
+        # over every candidate region either way.
+        "do_formula_enrichment": DO_FORMULA,
+        # CodeFormula again — same model reads code blocks and detects language.
+        "do_code_enrichment": DO_CODE,
+        # DocumentFigureClassifier. Tags each picture chart / photo / logo.
+        "do_picture_classification": DO_CLASSIFICATION,
         # The remote vision model. The only stage that costs money per call, and the
         # only thing that makes a chart searchable.
         "do_picture_description": True,
@@ -206,7 +210,7 @@ def build_pipeline_options():
     for alias in ("do_chart_extraction", "do_chart_data_extraction",
                   "do_chart_understanding", "do_picture_data"):
         if alias in flags:
-            requested[alias] = True
+            requested[alias] = DO_CHART_EXTRACTION
             break
     else:
         print("  NOTE: this docling build exposes no chart-extraction flag; charts "
@@ -324,7 +328,16 @@ def parse_pdf(pdf: Path):
     })
     started = time.time()
     doc = converter.convert(str(pdf)).document
-    print(f"  parsed in {time.time() - started:.1f}s", flush=True)
+    elapsed = time.time() - started
+    pages = len(doc.pages)
+    print(f"  parsed in {elapsed:.0f}s  ({elapsed / max(pages, 1):.0f}s per page)",
+          flush=True)
+    # Above roughly 30s a page something is running that probably should not
+    # be. Every enrichment is a model pass on CPU, per element.
+    if elapsed / max(pages, 1) > 30:
+        print("  SLOW. Run `python profile_parse.py <pdf>` to see which "
+              "enrichment is costing this — it times each one separately.",
+              flush=True)
     return doc
 
 

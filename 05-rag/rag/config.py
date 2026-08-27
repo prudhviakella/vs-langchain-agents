@@ -151,10 +151,50 @@ FIGURE_PROMPT = (
 FIGURE_AREA_THRESHOLD = float(os.getenv("FIGURE_AREA_THRESHOLD", "0.01"))
 
 
-# Render scale for figure crops. At 1.0 the axis labels in a chart are too small for
-# the vision model to read, and it invents plausible numbers rather than reporting
-# real ones. 2.0 is where labels become legible without the payload becoming absurd.
-FIGURE_RENDER_SCALE = 2.0
+# Render scale for figure crops. At 1.0 the axis labels in a chart are too small
+# for the vision model to read, and it invents plausible numbers rather than
+# reporting real ones. 2.0 is where labels become legible.
+#
+# It is also the single most expensive setting here on a figure-dense document:
+# 2x means four times the pixels, rendered on CPU, for every figure.
+FIGURE_RENDER_SCALE = float(os.getenv("FIGURE_RENDER_SCALE", "2.0"))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# What to run, and what each costs
+#
+# EVERY ONE OF THESE IS A MODEL PASS, ON CPU, PER ELEMENT.
+#
+# A 7-page report with 17 figures is not a small document to this pipeline: it
+# is 17 crops rendered at 2x, then classified, then chart-extracted, then sent
+# to a vision model. Four passes over each figure.
+#
+# Measure before deciding. `python profile_parse.py your.pdf` times each flag
+# separately on your machine with your document, and prints what each one adds.
+#
+#   TABLE_MODE_ACCURATE   materially better on nested headers, and several
+#                         times slower than FAST. Worth it for clinical and
+#                         financial tables; probably not for simple grids.
+#
+#   DO_CHART_EXTRACTION   reads numeric series off rasterised charts. Measured
+#                         0 of 17 on vector-drawn charts — which is most
+#                         financial and research PDFs. Costs a model pass per
+#                         figure and returns nothing on those. Off by default
+#                         for that reason.
+#
+#   DO_CLASSIFICATION     tags each picture chart/photo/logo. Cheap relative to
+#                         the others, and what lets you tell a header wordmark
+#                         from an exhibit afterwards.
+#
+#   DO_FORMULA / CODE     CodeFormula. Necessary if your documents contain
+#                         equations — without it they become the placeholder
+#                         `formula-not-decoded` and their content is gone.
+#                         Pure waste if they do not.
+# ─────────────────────────────────────────────────────────────────────────────
+TABLE_MODE_ACCURATE = os.getenv("TABLE_MODE_ACCURATE", "1") == "1"
+DO_CHART_EXTRACTION = os.getenv("DO_CHART_EXTRACTION", "0") == "1"
+DO_CLASSIFICATION = os.getenv("DO_CLASSIFICATION", "1") == "1"
+DO_FORMULA = os.getenv("DO_FORMULA", "1") == "1"
+DO_CODE = os.getenv("DO_CODE", "1") == "1"
 
 
 # The summary exists to state what a reader sees in a table but that appears in no

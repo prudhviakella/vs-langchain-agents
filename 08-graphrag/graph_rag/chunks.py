@@ -32,6 +32,38 @@ def index():
     return client.Index(config.INDEX_NAME)
 
 
+def _ids_from(page) -> list[str]:
+    """Pull plain id strings out of whatever `index.list()` yielded.
+
+    The shape has changed across Pinecone SDK versions and is not stable:
+
+        a list of str                    ["doc:abc:0", ...]
+        a list of objects with .id       [ListItem(id="doc:abc:0"), ...]
+        a ListResponse with .vectors     ListResponse(vectors=[ListItem(...)])
+
+    Assuming one shape and passing the result straight to fetch() produces a
+    confusing failure rather than an obvious one: the SDK stringifies whatever
+    it was given, and the error is about an ID being longer than 512 characters
+    — with the entire response object printed as the offending "id".
+
+    Normalising here means every caller sees a list of strings, whichever
+    version is installed.
+    """
+    # A ListResponse — unwrap to the items it holds.
+    vectors = getattr(page, "vectors", None)
+    if vectors is not None:
+        page = vectors
+
+    if isinstance(page, str):
+        return [page]
+
+    ids = []
+    for entry in page or []:
+        # A ListItem or similar, versus a plain string.
+        ids.append(getattr(entry, "id", entry))
+    return [i for i in ids if isinstance(i, str)]
+
+
 def load_chunks(index, doc_id: str | None = None,
                 namespace: str = config.NAMESPACE) -> list[dict]:
     """Every chunk's metadata, including its text, in reading order.
@@ -46,11 +78,18 @@ def load_chunks(index, doc_id: str | None = None,
     found: list[dict] = []
     prefix = f"{doc_id}:" if doc_id else None
 
-    for id_batch in index.list(prefix=prefix, namespace=namespace):
-        page = index.fetch(ids=id_batch, namespace=namespace).vectors
-        for vector in page.values():
+    for listing in index.list(prefix=prefix, namespace=namespace):
+        # `listing` is whatever this SDK version yields; _ids_from turns it into
+        # plain strings. Passing it to fetch() directly produces the "ID length
+        # exceeds 512 characters" error with the whole response object printed
+        # as the offending id.
+        id_batch = _ids_from(listing)
+        if not id_batch:
+            continue
+        fetched = index.fetch(ids=id_batch, namespace=namespace).vectors
+        for vector in fetched.values():
             found.append(dict(vector.metadata))
-        del page
+        del fetched
 
     # Reading order, so a graph built from consecutive chunks reflects the document.
     found.sort(key=lambda meta: (meta.get("doc_id", ""), int(meta.get("position", 0))))
