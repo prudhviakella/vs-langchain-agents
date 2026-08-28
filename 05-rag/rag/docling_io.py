@@ -46,8 +46,9 @@ import warnings
 from pathlib import Path
 
 from .config import (DO_CHART_EXTRACTION, DO_CLASSIFICATION, DO_CODE,
-                     DO_FORMULA, FIGURE_AREA_THRESHOLD, FIGURE_PROMPT,
-                     FIGURE_RENDER_SCALE, TABLE_MODE_ACCURATE, VISION_MODEL)
+                     DO_FORMULA, DO_OCR, FIGURE_AREA_THRESHOLD,
+                     FIGURE_PROMPT, FIGURE_RENDER_SCALE,
+                     TABLE_MODE_ACCURATE, VISION_MODEL)
 
 def picture_annotations(item) -> list:
     """Annotations attached to a picture, across docling versions."""
@@ -197,6 +198,17 @@ def build_pipeline_options():
         # Docling refuses to call any API-hosted model without this. Its default is
         # local-only, which is a deliberate data-governance posture.
         "enable_remote_services": True,
+        # CONDITIONAL — runs only on regions with no extractable text layer.
+        #
+        # Nearly free on a digital PDF, and the only thing that reads text baked
+        # into a graphic. An exhibit drawn as coloured boxes with a list inside
+        # loses its entire contents without this: the caption above and the
+        # source line below survive because they are real page text, and
+        # everything inside the boxes vanishes.
+        #
+        # Switch off the unconditional models instead — they are where the time
+        # actually goes.
+        "do_ocr": DO_OCR,
     }
 
     # The chart-extraction model reads numeric series out of bar and line charts

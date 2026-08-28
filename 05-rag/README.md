@@ -60,6 +60,31 @@ It parses the same PDF several times, adding one flag at a time, and prints what
 each one costs on your machine with your document. The difference between two
 rows is that flag's price.
 
+### Conditional or unconditional — this is the distinction that matters
+
+Some models run **once per element, whether or not that element needs them**.
+Others run **only where there is work to do**. Switching off the wrong kind
+saves almost nothing and loses content.
+
+| | Runs on |
+|---|---|
+| chart extraction | every figure |
+| classification | every figure |
+| formula / code | every candidate region |
+| rendering at 2× | every figure, four times the pixels |
+| **OCR** | **only regions with no extractable text layer** |
+
+On a digital PDF, OCR is nearly free — most text is already in the layer, so it
+touches a handful of graphic regions and skips the rest.
+
+But it is the **only** thing that reads text baked into a graphic. An exhibit
+drawn as coloured boxes with a bulleted list inside loses its entire contents
+without it: the caption above and the source line below survive, because those
+are real page text, and everything inside the boxes vanishes.
+
+**Turn off the unconditional ones. Leave OCR on** unless you have measured that
+it costs you something.
+
 Then switch off what you are not using:
 
 ```bash
@@ -69,6 +94,8 @@ DO_CHART_EXTRACTION=0   # reads numbers off charts. Measured 0 of 17 on
 DO_FORMULA=0 DO_CODE=0  # pure waste if your documents have no equations
 TABLE_MODE_ACCURATE=0   # FAST is several times quicker and worse on nested
                         # headers. Fine for simple grids.
+# DO_OCR=0              # do NOT. It is conditional, so it saves almost nothing,
+                        # and it is what reads text inside a graphic.
 FIGURE_RENDER_SCALE=1.0 # 2x is four times the pixels, per figure. But at 1x
                         # the vision model cannot read axis labels and starts
                         # inventing numbers, so check the descriptions after.

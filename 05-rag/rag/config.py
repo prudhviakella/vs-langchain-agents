@@ -190,6 +190,34 @@ FIGURE_RENDER_SCALE = float(os.getenv("FIGURE_RENDER_SCALE", "2.0"))
 #                         `formula-not-decoded` and their content is gone.
 #                         Pure waste if they do not.
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# CONDITIONAL vs UNCONDITIONAL — the distinction that decides what to switch off
+#
+# Some models run once per element, whether or not that element needs them.
+# Others run only where they are needed. Switching off the wrong kind saves
+# almost nothing and loses content.
+#
+#   UNCONDITIONAL      runs on every figure, or every candidate region
+#     chart extraction        17 figures = 17 model passes
+#     classification          17 figures = 17 model passes
+#     formula / code          every candidate region
+#     rendering at 2x         four times the pixels, every figure
+#
+#   CONDITIONAL        runs only where there is work to do
+#     OCR                     only regions with NO extractable text layer
+#
+# On a digital PDF, OCR is nearly free: most text is already in the layer, so
+# it runs on a handful of graphic regions and skips everything else.
+#
+# But it is the ONLY thing that reads text baked into a graphic. An exhibit
+# drawn as coloured boxes with a bulleted list inside is invisible without it —
+# the caption above and the source line below survive, because those are real
+# page text, and everything inside the boxes disappears.
+#
+# So: turn off the unconditional ones. Leave OCR on unless you have measured
+# that it costs you something.
+DO_OCR = os.getenv("DO_OCR", "1") == "1"
+
 TABLE_MODE_ACCURATE = os.getenv("TABLE_MODE_ACCURATE", "1") == "1"
 DO_CHART_EXTRACTION = os.getenv("DO_CHART_EXTRACTION", "0") == "1"
 DO_CLASSIFICATION = os.getenv("DO_CLASSIFICATION", "1") == "1"
