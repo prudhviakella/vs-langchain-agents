@@ -209,18 +209,81 @@ def table_looks_broken(markdown: str) -> list[str]:
     issues = []
 
     # ------------------------------------------------------------------
-    # SIGNAL 1 — DUPLICATE ADJACENT HEADER CELLS
+    # SIGNAL 1 — A SPLIT HEADER COLUMN
     # ------------------------------------------------------------------
     #
     # Column boundaries were mis-detected, so one column's content was
     # written into two:
     #
-    #     | Sponsor | Sponsor | Trials |
+    #     | Row Lab Adopter Adopte 31,912 | Row Lab Adopter Adopte 31,912 |
     #
-    # Adjacent only. The same header appearing twice at opposite ends of a
-    # wide table is usually a legitimate repeated column.
-    header = [cell.strip() for cell in rows[0].split("|") if cell.strip()]
-    if any(a == b and a for a, b in zip(header, header[1:])):
+    # WHAT THIS MUST NOT FLAG — AND USED TO
+    #
+    # Markdown has no colspan. A header cell that spans several columns is
+    # correctly rendered by repeating its text across every column it covers:
+    #
+    #     | Dose Level Table | Dose Level Table | ... (x7)     spans all 7
+    #     | Dose Level | Arm A Escalation | Arm A Escalation | Arm B* | Arm B* |
+    #
+    # That is a CORRECT table. Flagging it sent 21 of 45 tables in one
+    # protocol down the image-fallback path — a vision call each, producing a
+    # description of a grid that was fine, while the accurate markdown was
+    # discarded. The counts did not move when do_cell_matching was flipped,
+    # because there was never anything wrong to fix.
+    #
+    # THE TEST THAT SEPARATES THEM
+    #
+    # A span covers a contiguous run that something FURTHER DOWN subdivides —
+    # that is the whole point of a spanning header. A split column duplicates
+    # a cell at every depth, because the split runs the full height of the
+    # table.
+    #
+    #     span            | Arm A Escalation | Arm A Escalation |
+    #                     | BI 1361849       | Durvalumab       |   <- differ
+    #
+    #     split column    | Row Lab 31,912   | Row Lab 31,912   |
+    #                     | Enabler/ 426     | Enabler/ 426     |   <- same
+    #
+    # EVERY row is checked, not just the one below. Spans nest: a title
+    # spanning seven columns sits above headers spanning two and three, so
+    # the row immediately beneath a span is often a span itself. Checking one
+    # row down flags the outer span as broken.
+    #
+    # A repeated header with no row beneath to judge by claims nothing.
+    # ------------------------------------------------------------------
+    def cells(row: str) -> list[str]:
+        return [cell.strip() for cell in row.split("|")[1:-1]]
+
+    # A cell holding a label welded to a number. A legitimate spanning header
+    # is a title — "Arm A Escalation", "Dose Level Table". A header cell that
+    # already contains a value is not a title, it is wreckage, and a
+    # duplicated one is wreckage smeared across two columns.
+    WELDED = re.compile(r"[A-Za-z]{3,}\s+[\d,]{3,}")
+
+    grid = [cells(row) for row in rows]
+    header = grid[0]
+
+    split_columns = False
+    for i, (a, b) in enumerate(zip(header, header[1:])):
+        if not a or a != b:
+            continue
+        # A duplicated header that is itself welded is broken whatever sits
+        # below it. This is what catches a stacked pair of tables merged into
+        # one grid, where the row-label column was smeared across two columns
+        # and the proportion of welded cells is too small for SIGNAL 2 to see
+        # — 4 welded cells out of 200 is 2%, well under the share threshold.
+        if WELDED.search(a):
+            split_columns = True
+            break
+        # Otherwise: does anything below ever tell these two columns apart?
+        subdivided = any(len(row) > i + 1 and row[i] != row[i + 1]
+                         for row in grid[1:])
+        if subdivided or len(grid) < 2:
+            continue
+        split_columns = True
+        break
+
+    if split_columns:
         issues.append("duplicate adjacent header cells")
 
     # ------------------------------------------------------------------

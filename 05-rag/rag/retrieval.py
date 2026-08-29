@@ -1,15 +1,91 @@
 """Searching the index and answering from what comes back.
 
-Five steps, and that is the whole system:
+Query flow:
 
-    search      dense retrieval over the index
-    rerank      a cross-encoder reorders the candidates
-    filter      restrict what search is allowed to look at (passed to search)
-    table rows  fetch the rows behind any table summary that matched
-    assemble    fill a token budget, then restore document order
+    question
+        |
+        v
+    _query_vector()
+        |
+        |-- embed the question with the SAME model used at ingestion
+        |-- reuse the cache, so a repeated question costs nothing
+        |
+        v
+    index.query()
+        |
+        |-- dense search over the WHOLE index
+        |-- returns ~30 candidates, not 5
+        |-- tuned for RECALL: a chunk missed here is lost for good
+        |
+        v
+    pc.inference.rerank()
+        |
+        |-- a cross-encoder reads the question and each chunk TOGETHER
+        |-- tuned for PRECISION
+        |-- runs over ~30, never over the index
+        |
+        v
+    with_table_rows()
+        |
+        |-- did a table SUMMARY match?
+        |-- if so, fetch that table's rows by table_id
+        |-- exact lookup, no similarity involved
+        |
+        v
+    assemble()
+        |
+        |-- fill a token budget, best first
+        |-- then restore DOCUMENT order
+        |
+        v
+    answer()
+        |
+        v
+      prose
 
-Everything here is called from the retrieval notebook. Reading this file is optional
-— the notebook shows what each step does and why.
+
+WHY TWO SEARCH STAGES
+---------------------
+
+At ingestion, the embedding model turned each chunk into one vector. It did
+that BEFORE your question existed, so it had to decide what to keep without
+knowing what you would ask.
+
+The result is a vector that represents the chunk's TOPIC. It cannot represent
+"this chunk answers that question", because the question was not there.
+
+A reranker has no such problem: it receives the question and the chunk
+together, in full, so a single word can change the score. That is how it
+separates "inclusion criteria" from "exclusion criteria" when a vector
+comparison cannot.
+
+The catch is cost. A reranker runs ONCE PER QUESTION-CHUNK PAIR. Over 3,000
+chunks that is 3,000 model runs for one question. Dense search is one model
+run plus a nearest-neighbour lookup.
+
+So: dense search narrows the index to about thirty, and the reranker orders
+those thirty properly.
+
+
+THE CONSEQUENCE WORTH REMEMBERING
+---------------------------------
+
+The reranker only reorders what dense search handed it.
+
+If the right chunk is not in those thirty, no amount of reranking will find
+it. That makes the candidate pool the ceiling on everything downstream, and
+the one retrieval setting genuinely worth tuning.
+
+
+WHAT THIS FILE DOES NOT DO
+--------------------------
+
+    It does NOT parse documents.
+    It does NOT chunk.
+    It does NOT embed a corpus.
+
+Everything here runs per question, in well under a second. The index was
+built by the ingestion modules.
 """
 
 import json

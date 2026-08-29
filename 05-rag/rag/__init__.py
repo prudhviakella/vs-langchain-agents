@@ -3,16 +3,20 @@
     PDF
      |
      v
-   docling_io.py     six models -> a DoclingDocument
+   docling_io.py     layout, TableFormer, OCR, classifier, CodeFormula
+     |               then describe_figures() — vision model, CACHED
      |
      v
-   inspect.py        did it work? counts, warnings, a readable report
+   inspect.py        did it work? counts, layout quality, a readable report
+     |
+     v
+   headings.py       correct false headings before chunking
      |
      v
    tables.py         serialise, check the grid, summarise
      |
      v
-   chunking.py       split, add heading context, one summary per table
+   chunking.py       drop furniture, split, merge prose, one record per figure
      |
      v
    embedding.py      records -> vectors, cached by content
@@ -42,6 +46,23 @@ downstream can detect it.
 
 So each stage has a checkpoint, and `inspect.py` writes reports you read next
 to the original PDF before anything is embedded.
+
+WHAT THE CHUNKER DOES NOT DO FOR YOU
+
+HybridChunker only splits, and merges consecutive chunks with an equal heading
+path. It never filters and never enforces a minimum size. Three policies are
+therefore ours, and they live in chunking.py:
+
+    what is not worth indexing      the drop filter
+    how small a prose chunk may be  the merge
+    one record per figure           the figure pass
+
+WHAT THE LAYOUT MODEL DECIDES
+
+Which regions are headings, and which captions belong to which figure. Both
+are wrong often enough to matter, neither has a pipeline flag, and the only
+lever is LAYOUT_MODEL in docling_io.py. The extraction report prints both
+numbers, so comparing two layout models is reading two lines.
 
 The notebooks call these in order. The same package runs on AWS unchanged.
 """

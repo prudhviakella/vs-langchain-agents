@@ -1,13 +1,57 @@
 """The audit trail, written to DynamoDB when running on AWS.
 
-Two record shapes in one table:
+What gets written, and when:
+
+    ingest one document
+            |
+            v
+    audit.run("STARTED")            -> RUN#<run_id>
+            |
+            v
+    with Stage(audit, "parse"):
+            |
+            |-- Stage.__enter__()   -> RUN#<run_id>#STAGE#parse   STARTED
+            |-- ... the work ...
+            |-- Stage.__exit__()    -> RUN#<run_id>#STAGE#parse   OK or FAILED
+            |
+            v
+    ... the same for inspect, figures, chunk, index ...
+            |
+            v
+    audit.run("COMPLETED")          -> RUN#<run_id>   with counts and timing
+
+
+TWO RECORD SHAPES IN ONE TABLE
+------------------------------
 
     pk = DOC#<doc_id>   sk = RUN#<run_id>                  one per run
     pk = DOC#<doc_id>   sk = RUN#<run_id>#STAGE#<stage>    one per stage
 
-The stage records are what make a killed container debuggable. A run record alone
-says the document failed; the stage records say it failed during `parse`, forty
-minutes in, which points at memory rather than at credentials.
+Keying on the document means one query returns its entire history, in order,
+across every run it has ever had.
+
+
+WHY THE STAGE RECORDS EXIST
+---------------------------
+
+A run record alone tells you the document failed.
+
+The stage records tell you it failed during `parse`, forty minutes in — which
+points at memory rather than at credentials, and those have completely
+different fixes.
+
+The STARTED record is written BEFORE the work begins, deliberately. A stage
+with a start and no end is a container that was killed mid-stage, and no
+amount of after-the-fact logging can tell you that: the process was gone
+before it could write anything.
+
+
+WHEN THERE IS NO TABLE
+----------------------
+
+Every method becomes a no-op. That is not a special "local mode" — it is the
+same code path with a None table, so the notebook and the Fargate task run
+identical lines and there is no local-only bug to find later.
 """
 
 import time

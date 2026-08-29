@@ -13,7 +13,7 @@ package simply keeps the value it read.
 
 import os
 
-from rag import config
+from rag import chunking, config, docling_io
 
 FLAGS = [
     ("DO_OCR", config.DO_OCR, "1",
@@ -73,10 +73,50 @@ if not config.DO_OCR:
     print("  line survive, everything in the boxes disappears.")
     print("  Switch off the unconditional models instead.")
 
-print("\nIF FIGURES HAVE NO DESCRIPTIONS, CHECK THESE THREE:")
-for name in ("do_picture_description", "generate_picture_images",
-             "enable_remote_services"):
-    print(f"  {name:<28} forced on in docling_io.py, not switchable")
-print("\n  A figure with no description, with those three on, is either below")
+# ---------------------------------------------------------------------------
+# SETTINGS THAT DO NOT LIVE IN config.py
+#
+# These belong there and should move next time it is edited. They are read at
+# import in their own module, so the same stale-value trap applies: set them
+# BEFORE any `from rag` import.
+# ---------------------------------------------------------------------------
+print()
+print(f"{'setting':<24}{'in env':<12}{'in effect':<12}{'':4}what it does")
+print("-" * 96)
+for name, effective, note in [
+    ("LAYOUT_MODEL", docling_io.LAYOUT_MODEL or "(default)",
+     "which layout model labels headings and links captions"),
+    ("TABLE_CELL_MATCHING", docling_io.TABLE_CELL_MATCHING,
+     "match TableFormer cells to PDF text cells. 0 on duplicated headers"),
+    ("CACHE_FIGURE_DESCRIPTIONS", docling_io.CACHE_FIGURE_DESCRIPTIONS,
+     "describe figures after the parse, cached on the rendered bytes"),
+    ("MERGE_ACROSS_EXHIBITS", chunking.MERGE_ACROSS_EXHIBITS,
+     "merge prose that has a figure or table between it"),
+    ("PROSE_TARGET_TOKENS", chunking.PROSE_TARGET_TOKENS,
+     "where the same-heading prose merge stops"),
+    ("MIN_CHUNK_TOKENS", chunking.MIN_CHUNK_TOKENS,
+     "0 = off. Above 0, small records merge ACROSS a heading boundary"),
+    ("FURNITURE_MAX_TOKENS", chunking.FURNITURE_MAX_TOKENS,
+     "above this a chunk is never dropped, whatever it looks like"),
+]:
+    in_env = os.getenv(name)
+    print(f"{name:<24}{(in_env if in_env is not None else '(unset)'):<12}"
+          f"{str(effective):<12}{'':4}{note}")
+
+print("\nIF FIGURES HAVE NO DESCRIPTIONS:")
+if docling_io.CACHE_FIGURE_DESCRIPTIONS:
+    print("  describe_figures() runs AFTER the parse, not inside docling's")
+    print("  pipeline, so do_picture_description is deliberately off. Check")
+    print("  the 'figures described' line the parse prints.")
+else:
+    print("  docling's own picture-description step is running. It needs")
+    print("  do_picture_description, generate_picture_images and")
+    print("  enable_remote_services, all forced on in docling_io.py.")
+print("\n  A figure with no description either sits below")
 print("  FIGURE_AREA_THRESHOLD or the model returned nothing. Run:")
 print("      python diagnose_figure.py <parse.json> <index>")
+
+print("\nIF FIGURES HAVE NO EXHIBIT NUMBER:")
+print("  That is the caption, and the layout model links it — or does not.")
+print("  No setting controls it. Compare LAYOUT_MODEL values and read the")
+print("  'captions linked' line in the extraction report.")

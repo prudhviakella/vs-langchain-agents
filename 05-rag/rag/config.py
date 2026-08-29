@@ -1,9 +1,52 @@
 """Every setting the pipeline reads, in one module.
 
-Both halves — ingestion and retrieval — must agree on these. If ingestion embeds
-with one model and retrieval queries with another, the index returns well-formed
-results with plausible scores that happen to be meaningless, and nothing errors.
-The manifest in `index.py` is the guard against exactly that.
+Where these are used:
+
+    config.py
+        |
+        |-- EMBED_MODEL, EMBED dimensions ----> ingestion AND retrieval
+        |                                       both must agree, or results
+        |                                       are meaningless with no error
+        |
+        |-- CHUNK_TOKENS ---------------------> chunking.py
+        |
+        |-- FIGURE_*, DO_* -------------------> docling_io.py
+        |                                       what runs during a parse
+        |
+        |-- TABLE_* --------------------------> tables.py
+        |
+        |-- PINECONE_* -----------------------> index.py, sync.py
+        |                                       request and metadata limits
+        |
+        v
+    read ONCE, at import
+
+
+THE IMPORT-TIME READ MATTERS
+----------------------------
+
+These values are read from the environment when this module is first
+imported, and never again.
+
+So setting an environment variable in a notebook cell AFTER importing the
+package has no effect, and nothing warns you — the package simply keeps what
+it read. Set them first, or restart the kernel.
+
+Run `python check_config.py` to see what is actually in effect versus what
+the environment says.
+
+
+THE ONE THAT MUST MATCH ON BOTH SIDES
+-------------------------------------
+
+EMBED_MODEL.
+
+Ingest with one model and query with another and you get results back, with
+scores that look reasonable, that are meaningless. There is no error and no
+other symptom.
+
+That is what the manifest in index.py exists to prevent — it records how the
+index was built and refuses to run retrieval when the settings disagree.
 """
 
 import os
