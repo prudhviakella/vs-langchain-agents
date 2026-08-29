@@ -9,6 +9,26 @@ Two notebooks. Run them in order.
 | `01_ingestion.ipynb` | Read a PDF, check the parse, split it, put it in the index |
 | `02_retrieval.ipynb` | Search, rerank, filter, answer |
 
+## Running the whole corpus
+
+```bash
+python ingest_all.py --dry-run     # what would run, parses nothing
+python ingest_all.py               # everything in pdfs/
+python ingest_all.py --only NCT03164772
+```
+
+One document at a time, smallest first, committed as it goes. A document that
+fails is recorded and the run continues; fix the cause and run again and the
+finished ones are skipped. Two files land in `reports/`:
+
+```
+reports/_run.md      the table you read
+reports/_run.json    the same rows, for a script
+```
+
+Resume is on file size and mtime, so replacing a PDF re-ingests it. Use
+`--force` if you swapped in a file of identical size and timestamp.
+
 ## Setup
 
 ```bash
