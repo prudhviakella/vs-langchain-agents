@@ -59,6 +59,41 @@ EXTRACT_MODEL = os.getenv("EXTRACT_MODEL", "gpt-4o-mini")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Which layers actually run
+#
+# Only structure (layer 1) is universal — every chunk has a doc_id, a position, a
+# heading path, so it always produces a Document/Section/Chunk. Registry and
+# extraction are not like that:
+#
+#   registry     needs a real NCT number the document actually names, and needs
+#                that trial to exist in ClinicalTrials.gov. A corpus of internal
+#                drafts or unregistered protocols can reasonably have NONE.
+#
+#   extraction   is chunk-scoped, not document-scoped, and is the one layer with
+#                a real, ongoing cost — an LLM call per chunk, not a one-time
+#                setup step. Building the graph should never spend money as a
+#                side effect of someone just wanting the free structure layer.
+#
+# Both are controlled here rather than by commenting out notebook cells, so the
+# choice is one visible setting instead of a cell someone has to remember to
+# skip by hand every time they re-run from the top.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Free — a public API call, no LLM involved. On by default: there is no cost to
+# weigh against skipping it, only documents with no discoverable or registered
+# NCT number, which load_trials() already reports rather than failing on.
+RUN_REGISTRY = os.getenv("RUN_REGISTRY", "1") == "1"
+
+# Off by default, deliberately — the one setting in this file with a real,
+# ongoing dollar cost (see EXTRACT_MODEL above: roughly $1.50 across a
+# 3,000-chunk corpus at gpt-4o-mini). Structure and registry are worth having
+# by default because neither costs anything to build; extraction is worth
+# having only once someone has decided the six document-only entity types are
+# worth paying for, which should be an explicit choice, not what happens the
+# first time this notebook is run top to bottom.
+RUN_EXTRACTION = os.getenv("RUN_EXTRACTION", "0") == "1"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Cache
 #
 # Keyed on (model, prompt, chunk text). The prompt is part of the key because

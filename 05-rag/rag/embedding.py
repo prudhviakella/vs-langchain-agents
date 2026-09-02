@@ -117,6 +117,27 @@ def embed(texts: list[str], use_cache: bool = True, verbose: bool = False) -> np
     for group in _batches([texts[i] for i in missing]):
         # _batches indexes into the *missing* list, so map back to real positions.
         indices = [missing[j] for j in group]
+
+        # Recompute the real total rather than trust _batches' internal running
+        # count. This is what turned a silent overshoot into an opaque
+        # `openai.BadRequestError` three frames deep in someone else's client
+        # on a real 20-document run — two documents each produced one batch
+        # over the cap, and the only place that showed up was a stack trace
+        # with no indication of WHICH texts were responsible. This check
+        # can't prevent a discrepancy between this tokenizer's count and
+        # OpenAI's own, but it turns "guess which batch, then guess which
+        # records" into a message that names the batch outright.
+        batch_tokens = sum(len(ENCODING.encode(texts[i])) for i in indices)
+        if batch_tokens > OPENAI_EMBED_MAX_TOKENS:
+            raise RuntimeError(
+                f"embedding batch of {len(indices)} texts totals "
+                f"{batch_tokens} tokens, over the {OPENAI_EMBED_MAX_TOKENS} "
+                "budget. _batches() should have split this — if you are "
+                "seeing this, either OPENAI_EMBED_MAX_TOKENS has been raised "
+                "too close to OpenAI's real 300,000 limit again, or a single "
+                "record exceeds the budget on its own (check for one over "
+                "CHUNK_TOKENS that skipped truncation).")
+
         for attempt in range(4):
             try:
                 response = client.embeddings.create(

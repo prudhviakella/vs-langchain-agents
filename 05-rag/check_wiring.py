@@ -44,7 +44,9 @@ for mod in (chunking, headings, docling_io):
     print(f"{mod.__name__.split('.')[-1]:<14}{mod.__file__}")
 
 # Look inside the LOADED functions, not the files.
-build = _inspect.getsource(chunking.build_records)
+# The passes are separate functions now, so the markers live in several
+# places. Read the whole loaded module rather than one function.
+build = _inspect.getsource(chunking)
 demote = _inspect.getsource(headings._demote)
 describe = _inspect.getsource(docling_io.describe_figures)
 
@@ -58,6 +60,8 @@ checks = [
      "is_furniture(" in build),
     ("prose is merged after the chunker",
      "PROSE_TARGET_TOKENS" in build),
+    ("small records can reach a floor across headings",
+     "MIN_CHUNK_TOKENS" in build),
     ("figures are handled in their own pass",
      "figure_slot" in build),
     ("figure captions are read from the document",
@@ -66,6 +70,10 @@ checks = [
      "FIGURE_CACHE" in describe and "sha256" in describe),
     ("merge_peers is off (our merge replaces it)",
      "merge_peers=False" in build),
+    ("the passes are separate functions",
+     all(hasattr(chunking, f) for f in
+         ("_to_entries", "_merge_prose", "_apply_floor",
+          "_to_records", "_table_summaries", "_finalise"))),
 ]
 
 print()

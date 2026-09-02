@@ -47,6 +47,14 @@ WHY ONE DOCUMENT AT A TIME, COMMITTED AS IT GOES
     always consistent with what has actually finished.
 """
 
+# ============================================================
+# CELL 1: Load Environment Variables
+# ============================================================
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import argparse
 import json
 import time
@@ -196,6 +204,7 @@ def write_log(rows: list[dict]) -> None:
 
 
 def main() -> None:
+
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("folder", nargs="?", default="pdfs",
                         help="folder of PDFs (default: pdfs)")

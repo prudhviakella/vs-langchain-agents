@@ -13,11 +13,37 @@ claim in layer 3 a path back to the page it came from.
 The ABOUT edge is the join between this layer and the registry. Without it the two
 are separate graphs in one database; with it, a traversal can start from a registry
 fact and end at the passage of the protocol that discusses it.
+
+READING-ORDER EDGES COME FROM THE CHUNK, NOT FROM RE-SORTING
+
+    The RAG pipeline already computed the reading-order chain once, correctly, in
+    `_finalise()` — `prev_id`/`next_id` are on every chunk's metadata, and that
+    computation deliberately handles a case a plain sort cannot: a table's fragments
+    and its summary can share the same `position` value, ordered relative to each
+    other by a second, content-type-aware key. Re-deriving NEXT edges here by
+    sorting on `position` alone throws that away — chunks sharing a position fall
+    back to whatever order Pinecone's fetch happened to return them in, which can
+    silently put a table's summary before its own fragments in the graph.
+
+    So this module does not re-sort. It reads `prev_id`/`next_id` straight off each
+    chunk and writes exactly that chain. One computation, trusted once, instead of
+    two computations that can disagree.
+
+SECTIONS GET A .key TOO
+
+    A Section's heading — "Eligibility Criteria", "Adverse Events" — is exactly the
+    kind of term a question would name, and store.find_chunks()/neighbours() reach
+    a node by searching `.key`. Without one, a section is only reachable by walking
+    down from its Document, never by naming it directly. Document itself is left
+    without a `.key`: a document is reached via its Trial (the ABOUT edge) or by
+    fetching its chunks directly, not by a user naming the document by title.
 """
 
 import hashlib
 import re
 from collections import defaultdict
+
+from .schema import normalise
 
 # An NCT number has fixed form, so no model is needed to find one. Registry
 # identifiers are the part of this domain that regex handles better than an LLM —
@@ -33,12 +59,17 @@ NCT_PATTERN = re.compile(r"(?<![A-Za-z0-9])NCT\d{8}(?!\d)", re.IGNORECASE)
 # Property names follow Neo4j convention — lowerCamelCase — rather than the
 # snake_case the vector store uses. The two are joined on the *value* of a chunk id,
 # not on the property name, so each side keeps its own conventions.
+#
+# nctId is spelled that way deliberately, matching Trial.nctId exactly, so a
+# reader scanning Document's properties sees the same name they would look for on
+# the node it joins to — one convention, not almost-one.
 CONSTRAINTS = [
     "CREATE CONSTRAINT document_id IF NOT EXISTS FOR (d:Document) REQUIRE d.docId IS UNIQUE",
     "CREATE CONSTRAINT section_id  IF NOT EXISTS FOR (s:Section)  REQUIRE s.sectionKey IS UNIQUE",
     "CREATE CONSTRAINT chunk_id    IF NOT EXISTS FOR (c:Chunk)    REQUIRE c.chunkId IS UNIQUE",
-    "CREATE INDEX chunk_page IF NOT EXISTS FOR (c:Chunk) ON (c.page)",
-    "CREATE INDEX chunk_type IF NOT EXISTS FOR (c:Chunk) ON (c.contentType)",
+    "CREATE INDEX chunk_page    IF NOT EXISTS FOR (c:Chunk)   ON (c.page)",
+    "CREATE INDEX chunk_type    IF NOT EXISTS FOR (c:Chunk)   ON (c.contentType)",
+    "CREATE INDEX section_key   IF NOT EXISTS FOR (s:Section) ON (s.key)",
 ]
 
 
@@ -71,7 +102,10 @@ def section_key(doc_id: str, heading: str) -> str:
 
     Scoped by document: "Eligibility Criteria" is a different section in each
     protocol, and a shared node would merge twenty of them into one and make the
-    hierarchy meaningless.
+    hierarchy meaningless. This is the MERGE identity, not the `.key` search
+    property below — the two answer different questions. A shared, document-scoped
+    identity is exactly wrong for search, where the same heading recurring across
+    twenty protocols is precisely what should be findable as one concept.
     """
     digest = hashlib.sha256(f"{doc_id}\x00{heading}".encode()).hexdigest()[:12]
     return f"{doc_id}:{digest}"
@@ -89,7 +123,8 @@ def load_structure(session, chunks: list[dict], verbose: bool = True) -> dict:
     for chunk in chunks:
         by_document[chunk.get("doc_id", "unknown")].append(chunk)
 
-    counts = {"documents": 0, "sections": 0, "chunks": 0, "linked_to_trial": 0}
+    counts = {"documents": 0, "sections": 0, "chunks": 0, "linked_to_trial": 0,
+             "next_edges": 0}
 
     for doc_id, doc_chunks in by_document.items():
         source = doc_chunks[0].get("source", "")
@@ -100,7 +135,7 @@ def load_structure(session, chunks: list[dict], verbose: bool = True) -> dict:
         session.run("""
             MERGE (d:Document {docId: $doc_id})
             SET d.sourceFile = $source, d.nChunks = $n_chunks,
-                d.nct_id = $nct_id, d.origin = 'structure'
+                d.nctId = $nct_id, d.origin = 'structure'
         """, doc_id=doc_id, source=source, n_chunks=len(doc_chunks), nct_id=nct_id)
         counts["documents"] += 1
 
@@ -126,10 +161,12 @@ def load_structure(session, chunks: list[dict], verbose: bool = True) -> dict:
             if key not in seen_sections:
                 session.run("""
                     MERGE (s:Section {sectionKey: $key})
-                    SET s.heading = $heading, s.docId = $doc_id, s.origin = 'structure'
+                    SET s.heading = $heading, s.docId = $doc_id,
+                        s.key = $search_key, s.origin = 'structure'
                     WITH s MATCH (d:Document {docId: $doc_id})
                     MERGE (d)-[:HAS_SECTION]->(s)
-                """, key=key, heading=heading, doc_id=doc_id)
+                """, key=key, heading=heading, doc_id=doc_id,
+                     search_key=normalise(heading))
                 seen_sections.add(key)
                 counts["sections"] += 1
 
@@ -149,15 +186,20 @@ def load_structure(session, chunks: list[dict], verbose: bool = True) -> dict:
                  n_tokens=chunk.get("n_tokens"), key=key)
             counts["chunks"] += 1
 
-    # Reading-order edges between consecutive chunks. What makes "the passage after
-    # this one" a traversal rather than an arithmetic guess at an id.
-    for doc_chunks in by_document.values():
-        ordered = sorted(doc_chunks, key=lambda c: int(c.get("position", 0)))
-        for earlier, later in zip(ordered, ordered[1:]):
-            session.run("""
-                MATCH (a:Chunk {chunkId: $a}) MATCH (b:Chunk {chunkId: $b})
-                MERGE (a)-[:NEXT]->(b)
-            """, a=earlier["chunk_id"], b=later["chunk_id"])
+    # Reading-order edges, taken directly from each chunk's own prev_id/next_id —
+    # not re-derived by sorting. See the module docstring for why re-sorting on
+    # position alone can silently misorder a table's fragments against its summary,
+    # which this avoids by trusting the one place that ordering was already
+    # computed correctly.
+    for chunk in chunks:
+        next_id = chunk.get("next_id")
+        if not next_id:
+            continue
+        session.run("""
+            MATCH (a:Chunk {chunkId: $a}) MATCH (b:Chunk {chunkId: $b})
+            MERGE (a)-[:NEXT]->(b)
+        """, a=chunk["chunk_id"], b=next_id)
+        counts["next_edges"] += 1
 
     if verbose:
         for key, value in counts.items():

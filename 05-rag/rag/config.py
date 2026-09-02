@@ -139,8 +139,36 @@ PINECONE_REQUEST_BYTES = 2 * 1024 * 1024  # per upsert request
 
 OPENAI_EMBED_MAX_INPUTS = 2048           # per embeddings request
 
-
-OPENAI_EMBED_MAX_TOKENS = 300_000        # per embeddings request
+# The API's real hard limit is 300,000. This is set BELOW it, not at it.
+#
+# WHAT WENT WRONG WITHOUT A MARGIN
+#
+# Set at exactly 300_000 with no buffer, two documents in a 20-document
+# corpus run — 480 records and 493 records — each produced a single
+# embeddings request that OpenAI rejected:
+#
+#     "Requested 304700 tokens, max 300000 tokens per request"
+#     "Requested 459215 tokens, max 300000 tokens per request"
+#
+# Neither document had an oversized record — both runs logged `max 1024`
+# tokens per chunk, the CHUNK_TOKENS ceiling, correctly enforced. The
+# overshoot happened at the BATCH level, aggregating many compliant records
+# into one request that summed past the true cap. `_batches()` closes a
+# batch before adding a text that would push it over — correct in principle
+# — but a cap set at the exact hard limit has no room to absorb anything:
+# a tokenizer that counts even slightly differently from OpenAI's own count,
+# rounding, or per-request overhead the API charges but a local count
+# doesn't. At zero margin, any of those turns "should fit" into "rejected."
+#
+# Every other budget in this codebase leaves room on purpose — see
+# chunking.py's `_finalise`, which computes the Pinecone metadata budget as
+# the hard cap MINUS overhead MINUS a fixed buffer, not the hard cap itself.
+# This should have matched that pattern from the start and didn't.
+#
+# 250,000 leaves 50,000 tokens — about 17% — of headroom under the real
+# limit. That is generous enough to absorb a counting discrepancy on a
+# single record, not just on the aggregate.
+OPENAI_EMBED_MAX_TOKENS = 250_000         # per embeddings request, with margin
 
 
 # ─────────────────────────────────────────────────────────────────────────────

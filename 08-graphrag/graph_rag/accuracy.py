@@ -78,7 +78,14 @@ def normalise_value(field: str, value) -> str:
         return ""
     text = str(value).strip().lower()
     if field == "phase":
+        # registry.parse_trial joins multiple phases with ", " (comma-space) — see
+        # registry.py's `"phase": ", ".join(...)`. Without stripping the comma here
+        # too, a registry value like "PHASE1, PHASE2" and a model's equally correct
+        # "Phase 1/2" — literally how this corpus's own NSCLC trial titles itself —
+        # normalise to "1, 2" and "1 2" respectively: different strings, scored as
+        # a mismatch for a combination-phase trial that was extracted correctly.
         text = (text.replace("phase", "").replace("/", " ").replace("-", " ")
+                    .replace(",", " ").replace(" and ", " ")
                     .replace("iv", "4").replace("iii", "3").replace("ii", "2")
                     .replace("i", "1"))
         return " ".join(sorted(text.split()))

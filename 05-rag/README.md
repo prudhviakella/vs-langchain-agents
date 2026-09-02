@@ -1,263 +1,102 @@
-# RAG Pipeline — local
+# Graph RAG — local
 
-Turn PDFs into a searchable index, then ask questions of it.
+A knowledge graph over the same documents, in Neo4j. Answers the questions vector
+search cannot: joins across documents, and how things connect.
 
-Two notebooks. Run them in order.
+Run the RAG notebooks first — this reads the chunks out of that index.
 
 | Notebook | What it does |
 |---|---|
-| `01_ingestion.ipynb` | Read a PDF, check the parse, split it, put it in the index |
-| `02_retrieval.ipynb` | Search, rerank, filter, answer |
+| `01_build_graph.ipynb` | Build the graph in three layers |
+| `02_query_graph.ipynb` | Query it, and compare against vector search |
 
-## Running the whole corpus
+## Setup — Neo4j Aura
 
-```bash
-python ingest_all.py --dry-run     # what would run, parses nothing
-python ingest_all.py               # everything in pdfs/
-python ingest_all.py --only NCT03164772
-```
-
-One document at a time, smallest first, committed as it goes. A document that
-fails is recorded and the run continues; fix the cause and run again and the
-finished ones are skipped. Two files land in `reports/`:
+Create a free instance at https://neo4j.com/cloud/aura. It gives you a credentials
+file when the instance is created:
 
 ```
-reports/_run.md      the table you read
-reports/_run.json    the same rows, for a script
+NEO4J_URI=neo4j+s://xxxxxxxx.databases.neo4j.io
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=<generated>
 ```
 
-Resume is on file size and mtime, so replacing a PDF re-ingests it. Use
-`--force` if you swapped in a file of identical size and timestamp.
-
-## Setup
+**The password is shown once and never again.** If it is lost, reset it from the
+Aura console.
 
 ```bash
 pip install -r requirements.txt
-export OPENAI_API_KEY=sk-...
-export PINECONE_API_KEY=pc-...
 
-jupyter lab 01_ingestion.ipynb
+export OPENAI_API_KEY=sk-... PINECONE_API_KEY=pc-...
+export NEO4J_URI=neo4j+s://xxxxxxxx.databases.neo4j.io
+export NEO4J_USER=neo4j
+export NEO4J_PASSWORD=...
+
+jupyter lab 01_build_graph.ipynb
 ```
 
-Put your PDFs in a `pdfs/` folder next to the notebooks.
+Two things about Aura worth knowing before you start.
 
-Keep keys out of the repo. A `.env` committed once is a `.env` in the history
-forever.
+**The URI scheme matters.** Aura needs `neo4j+s://`, which is encrypted. A plain
+`bolt://` URI fails with a message about routing, which has nothing to do with the
+real cause. `driver()` checks this and says so.
+
+**A free instance pauses after 3 days of no activity** and is deleted after 30. Your
+graph is not permanent. Rebuild it from the notebooks — that takes minutes and the
+extraction is cached, so it costs nothing the second time.
+
+The free tier caps you at 200,000 nodes and 400,000 relationships. Twenty clinical
+protocols will not come close.
+
+### Or run it locally
+
+```bash
+docker run -d --name neo4j -p 7474:7474 -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/password neo4j:5
+
+export NEO4J_URI=bolt://localhost:7687
+export NEO4J_PASSWORD=password
+```
+
+Browse at http://localhost:7474. Aura has the same browser built in.
+
+**Never put a password in a source file.** A password written into code is in every
+copy of that code, and changing it means rewriting history.
+
+## Three layers
+
+```
+1  structure   Document → Section → Chunk        free, from metadata
+2  registry    Trial and everything it links     free, from ClinicalTrials.gov
+3  extracted   what only the document knows      one LLM call per chunk
+```
+
+The order is the point. Structure first, because it is free. Registry second, because
+it is correct by definition. Extraction last, and **only for what the other two
+cannot know**.
+
+Most graph pipelines extract everything with a model, including facts that are
+already published in a registry. That means paying to guess at answers you can look
+up — and leaving no way to tell a known fact from a guess once both are nodes.
+
+Here every node records where it came from, so a query can ask for facts or accept
+guesses.
+
+## The useful side effect
+
+Because the registry is correct, you can **measure** how accurate the extraction is.
+Pull the sponsor out of the PDF, compare it to the registry, count. That is a real
+number for a step nobody usually measures.
 
 ## The code
 
-The notebooks are short on purpose. All the machinery is in the `rag` package,
-one module per step:
-
 | Module | What |
 |---|---|
-| `config.py` | Every setting both notebooks must agree on |
-| `docling_io.py` | Reading the PDF, and describing its figures |
-| `inspect.py` | Checking the parse worked, and writing readable reports |
-| `headings.py` | Demoting regions the layout model wrongly called headings |
-| `tables.py` | Tables: reading, checking, summarising |
-| `chunking.py` | Splitting into pieces, with metadata |
-| `embedding.py` | Embedding, with a cache |
-| `index.py` | Talking to the vector database |
-| `sync.py` | Working out what changed since last time |
-| `retrieval.py` | Search, rerank, answer |
-| `clients.py` | API clients |
-
-You do not need to read them to follow the notebooks. Open one if you want the
-details of a step.
-
-## Three things the chunker will not do for you
-
-Docling's `HybridChunker` splits on document structure, then refines against a
-token budget. That is the right foundation and there is no better one for a
-layout-parsed PDF — it is the only chunker that consumes the parse directly, so
-page numbers, heading paths and table references survive into the records.
-
-But read its source and it is four stages, of which exactly one ever combines
-anything:
-
-```
-HierarchicalChunker                      one chunk per detected element
-_split_by_doc_items                      window the items to fit the budget
-_split_using_plain_text                  semchunk whatever is still oversized
-_merge_chunks_with_matching_metadata     only when merge_peers=True
-```
-
-It has a ceiling and no floor. It never filters. And its merge is blind to
-element type — the predicate is `headings == current_headings` on consecutive
-chunks, nothing more, which is why turning it on glues a paragraph to a contact
-table.
-
-So three policies are ours, and they live in `chunking.py`:
-
-| Policy | What it does |
-|---|---|
-| the drop filter | attribution lines and logo glyphs never become vectors |
-| the prose merge | adjacent prose under one heading, up to `PROSE_TARGET_TOKENS` |
-| the figure pass | one record per figure, never several in one vector |
-
-There is **no `min_tokens` parameter** on `HybridChunker`, whatever some
-documentation mirrors say. Passing one is silently ignored.
-
-## What the layout model decides
-
-Everything downstream keys off the labels the layout model assigns. Two of its
-outputs matter more than they look:
-
-**Which regions are headings.** A heading is a chunk boundary *and* the string
-prepended into every vector beneath it *and* the entire merge predicate. A
-region wrongly called a section header does all three kinds of damage at once.
-`headings.py` repairs what it can.
-
-**Which captions belong to which figure.** When the link fails, the caption
-survives as a loose text element and the figure record has no exhibit number —
-so "what does Exhibit 9 show" has nothing to match.
-
-Neither has a pipeline flag. The only lever is `LAYOUT_MODEL`:
-
-```bash
-LAYOUT_MODEL=heron_101    # the accuracy variant of the default
-```
-
-The extraction report prints both numbers, so comparing two models is reading
-two lines:
-
-```
-layout (default): 10/17 captions linked, 3/16 headers look false
-```
-
-The `egret_*` variants are faster and more accurate on paper but crash on some
-builds — their HuggingFace configs use hyphenated label names that Docling's
-label map does not normalise. Try `heron_101` first.
-
-## Settings
-
-Parse enrichments, in `config.py`:
-
-```bash
-DO_CHART_EXTRACTION=0   # reads numbers off charts. Measured 0 of 17 on
-                        # vector-drawn charts, which is most financial PDFs.
-                        # Already off by default.
-DO_FORMULA=0 DO_CODE=0  # pure waste if your documents have no equations
-TABLE_MODE_ACCURATE=0   # FAST is several times quicker and worse on nested
-                        # headers. Fine for simple grids.
-# DO_OCR=0              # do NOT. It is conditional, so it saves almost nothing,
-                        # and it is what reads text inside a graphic.
-FIGURE_RENDER_SCALE=1.0 # 2x is four times the pixels, per figure. But at 1x
-                        # the vision model cannot read axis labels and starts
-                        # inventing numbers, so check the descriptions after.
-```
-
-Parse structure, in `docling_io.py`:
-
-```bash
-LAYOUT_MODEL=heron_101          # see above
-TABLE_CELL_MATCHING=0           # try this on duplicated adjacent header cells
-CACHE_FIGURE_DESCRIPTIONS=0     # hand figure descriptions back to docling
-```
-
-Chunking, in `chunking.py`:
-
-```bash
-MERGE_ACROSS_EXHIBITS=0         # stop prose merging past a figure or table
-```
-
-`python check_config.py` prints every one of these, the environment value, and
-whether they agree. They disagree more often than you would think, because each
-module reads the environment once, at import.
-
-## Figure descriptions are cached
-
-The vision model is the only stage that costs money per call, and the only
-non-deterministic one — `temperature=0` and a fixed seed make OpenAI
-best-effort reproducible, not reproducible.
-
-That matters more than it sounds. Chunk ids are hashes of chunk text, and a
-figure's description is part of that text. Reword sixteen descriptions and you
-change sixteen chunk ids, and `sync.py` deletes and re-embeds every figure in a
-document nobody edited.
-
-So the description step runs after the parse, in `describe_figures()`, against a
-cache keyed on the rendered image bytes plus the prompt plus the model. Change
-any of those and the key changes on its own. Change nothing and the description
-is byte-identical, forever, for free.
-
-The parse itself is still not cached, and should not be: it depends on the
-settings above as much as on the file, and a cache keyed on the filename returns
-work done under different settings.
-
-## If parsing is slow
-
-Every enrichment is a **model pass, on CPU, per element**. A 7-page report with
-17 figures is not a small document to this pipeline.
-
-Twenty minutes for eight pages means something is running that should not be.
-Find out which, rather than guessing:
-
-```bash
-python profile_parse.py pdfs/your.pdf
-```
-
-It parses the same PDF several times, adding one flag at a time, and prints what
-each one costs on your machine with your document.
-
-### Conditional or unconditional — this is the distinction that matters
-
-Some models run **once per element, whether or not that element needs them**.
-Others run **only where there is work to do**. Switching off the wrong kind saves
-almost nothing and loses content.
-
-| | Runs on |
-|---|---|
-| chart extraction | every figure |
-| classification | every figure |
-| formula / code | every candidate region |
-| rendering at 2× | every figure, four times the pixels |
-| **OCR** | **only regions with no extractable text layer** |
-
-On a digital PDF, OCR is nearly free — most text is already in the layer. But it
-is the **only** thing that reads text baked into a graphic. An exhibit drawn as
-coloured boxes with a bulleted list inside loses its entire contents without it.
-
-**Turn off the unconditional ones. Leave OCR on** unless you have measured that
-it costs you something.
-
-The first run also downloads about 500 MB of model weights. That is one-time,
-and it is not the 22 minutes.
-
-## The idea worth remembering
-
-**When this pipeline goes wrong, it usually does not crash.** A setting left off
-means an equation becomes a placeholder, or a chart never gets described, or a
-table comes out with a broken grid. Everything downstream runs perfectly happily
-on top of it, and you get an index that looks complete and is missing content.
-
-Reporting that something happened is not evidence that it did, either. An
-earlier version of `headings.py` printed `demoted 4 false headings` on every run
-and changed no chunk boundary at all, because it set an attribute the chunker
-never reads. It ran that way for two full ingestions. `clean_headings` now
-re-reads the document afterwards and warns if a demotion did not take.
-
-So every step has a checkpoint, and ingestion writes reports you can read next
-to the original PDF:
-
-```
-reports/<doc>/<doc>.extract.md    every element, with its page and its description
-reports/<doc>/<doc>.chunks.md     every chunk exactly as it will be stored
-```
-
-One folder per document. A 20-document corpus writes 80 report files, and flat
-that is a directory nobody opens. Reports written by an earlier version sit
-flat in `reports/` — delete them or leave them, they are outputs and every one
-is regenerated by a re-run.
-
-Read those before trusting anything. Then:
-
-```bash
-python check_config.py                       # what settings are in effect
-python check_wiring.py                       # is the loaded code the current code
-python check_chunks.py reports/<doc>/<doc>.chunks.json
-```
-
-`check_chunks.py` names which of six failures you have, and each has a different
-fix. It reads only the reports, so it needs no keys and no parse.
+| `config.py` | Connections and models |
+| `structure.py` | Layer 1 — documents, sections, chunks |
+| `registry.py` | Layer 2 — ClinicalTrials.gov |
+| `schema.py` | Layer 3 — what to extract, and what to reject |
+| `extract.py` | The extraction calls, cached |
+| `store.py` | Writing to Neo4j, and the queries |
+| `answer.py` | Answering from the graph |
+| `accuracy.py` | Scoring extraction against the registry |

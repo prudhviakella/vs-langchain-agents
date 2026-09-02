@@ -32,6 +32,13 @@ Query flow:
         |-- exact lookup, no similarity involved
         |
         v
+    with_neighbors()
+        |
+        |-- is a result SHORT or TRUNCATED?
+        |-- if so, fetch prev_id/next_id — the structural replacement
+        |-- for overlap, paid at query time instead of on every chunk
+        |
+        v
     assemble()
         |
         |-- fill a token budget, best first
@@ -109,7 +116,7 @@ MIN_CANDIDATES = 24
 # an older run — reading them with .get() rather than [] keeps that from raising.
 METADATA_FIELDS = ("chunk_id", "content_type", "page", "section_id", "doc_date", "text")
 
-EXTRA_FIELDS = ("prev_id", "next_id", "table_id", "image_uri")
+EXTRA_FIELDS = ("prev_id", "next_id", "table_id", "image_uri", "truncated")
 
 def _query_vector(text: str) -> np.ndarray:
     """Embed a query with the same model and cache the corpus used.
@@ -227,6 +234,69 @@ def with_table_rows(index, results: list[dict], embed_dims: int,
     return sorted(merged.values(), key=lambda r: r["position"])
 
 
+def with_neighbors(index, results: list[dict], embed_dims: int,
+                   min_tokens: int = 100) -> list[dict]:
+    """Expand a short result to its adjacent chunks by prev_id/next_id.
+
+    Every record was written with these two ids — see chunking.py's
+    _finalise — specifically as the structural replacement for overlap: a
+    chunk is context-poor not because it needs padding at ingestion time, but
+    because the ONE question that needs its neighbour is rare, so the cost
+    should be paid at query time, for that question only, not on every chunk
+    in the corpus whether it is ever needed or not.
+
+    Until this function, those two fields were carried on every result (see
+    EXTRA_FIELDS) and never read. Written in, never wired up — the exact kind
+    of gap this pipeline's own diagnostics are built to catch elsewhere, and
+    did not catch here because there is no report for retrieval the way
+    there is for ingestion.
+
+    WHEN A NEIGHBOUR IS FETCHED
+
+    Only for a result under `min_tokens` — a chunk long enough to already
+    carry a complete thought needs no expansion, and expanding every result
+    unconditionally would inflate the context budget for the common case to
+    fix the rare one. A chunk marked `truncated` (chunking.py's oversized-atom
+    case) is also expanded, since its stored text is known incomplete.
+
+    Same shape as with_table_rows: a filtered, exact lookup by id, not a
+    similarity search — a specific chunk_id is either in the index or it is
+    not, and asking a vector search to find it would be paying for a rank
+    that is not in question.
+    """
+    ids_needed = {r[cid_field]
+                 for r in results
+                 for cid_field in ("prev_id", "next_id")
+                 if (r["n_tokens"] < min_tokens or r.get("truncated"))
+                 and r.get(cid_field)}
+    if not ids_needed:
+        return results
+
+    merged = {r["chunk_id"]: r for r in results}
+    have = ids_needed - merged.keys()
+    if not have:
+        # Both neighbours already present on their own merit — nothing to
+        # fetch, but still worth returning through the same shape as the
+        # fetch path so callers do not need two cases.
+        return sorted(merged.values(), key=lambda r: r["position"])
+
+    fragments = index.query(
+        vector=[0.0] * embed_dims, top_k=len(have),
+        namespace=NAMESPACE, include_metadata=True,
+        filter={"chunk_id": {"$in": sorted(have)}},
+    ).matches
+    for match in fragments:
+        row = _row(match.metadata)
+        row["embedding"] = None
+        # setdefault: a neighbour that is ALSO independently a real result
+        # keeps its rerank score rather than being overwritten with zero.
+        merged.setdefault(row["chunk_id"], row)
+
+    # Reading order, so an expanded chunk sits next to the one that pulled it
+    # in rather than wherever position landed it in the merge.
+    return sorted(merged.values(), key=lambda r: r["position"])
+
+
 # Share of the generation model's window reserved for retrieved context. The rest
 # covers the system prompt, the question, and the completion — a budget that ignored
 # those would produce a prompt that fits and a response that gets truncated.
@@ -257,11 +327,12 @@ def assemble(results: list[dict], budget: int = CONTEXT_BUDGET_TOKENS) -> tuple[
                      "dropped": len(results) - len(chosen)}
 
 def answer(index, query: str, top_k: int = 5, table_rows: bool = True,
-           embed_dims: int | None = None, **kwargs) -> dict:
-    """The whole query path: search, rerank, fetch table rows, fill the budget,
-    generate.
+           neighbors: bool = True, embed_dims: int | None = None,
+           **kwargs) -> dict:
+    """The whole query path: search, rerank, fetch table rows and neighbours,
+    fill the budget, generate.
 
-    That is the entire system. Five steps.
+    That is the entire system. Six steps.
     """
     started = time.time()
     results = search(index, query, top_k=top_k, **kwargs)
@@ -270,6 +341,11 @@ def answer(index, query: str, top_k: int = 5, table_rows: bool = True,
 
     if table_rows and embed_dims:
         results = with_table_rows(index, results, embed_dims)
+    if neighbors and embed_dims:
+        # After with_table_rows, not before: a table fragment pulled in by
+        # table_id has no prev_id/next_id of its own worth chasing, and
+        # running this first would mean re-sorting twice for no benefit.
+        results = with_neighbors(index, results, embed_dims)
 
     context, stats = assemble(results)
     response = client.chat.completions.create(

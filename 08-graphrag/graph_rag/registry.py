@@ -16,6 +16,32 @@ tested and changed on its own.
 
 The v2 API is public and needs no key.
     https://clinicaltrials.gov/api/v2/studies/NCT04368728
+
+EVERY NODE GETS A .key
+
+    store.find_chunks() and store.neighbours() — the functions that turn a question's
+    words into graph traversal — both search on a `.key` property. Earlier, only the
+    extraction layer's six entity types had one; every node written here had a
+    domain-specific identity property instead (nctId, name, facility, measure,
+    term), and none of them was named `.key`. The effect was silent, not an error:
+    a question naming a sponsor, a drug, a disease, a country or a site matched
+    nothing, because the property the search ran on simply did not exist on that
+    node. The graph was correct; it was just invisible to term search.
+
+    The fix is not to make the search function check five property names instead
+    of one — that only holds until a sixth node type shows up. Every node below now
+    gets `.key = normalise(...)` on its own display name, using the exact function
+    `schema.py` already uses as the extraction layer's identity convention. One
+    normalisation function, one identity property, applied everywhere. The
+    `find_chunks`/`neighbours` queries in store.py do not change at all — they were
+    always correct; they had nothing to find.
+
+    `.key` is for SEARCH. The MERGE identity — what makes a re-run converge instead
+    of duplicate — is still each node's own real-world identifier (nctId, name,
+    facility, (measure, nctId)), unchanged below. Two different jobs, and conflating
+    them would be its own mistake: a Trial's uniqueness is its nctId, not a
+    lowercased, noise-stripped string that a differently-titled trial could collide
+    with.
 """
 
 import json
@@ -23,6 +49,7 @@ import time
 from pathlib import Path
 
 from . import config
+from .schema import normalise
 
 CT_API_BASE = "https://clinicaltrials.gov/api/v2/studies"
 
@@ -199,6 +226,18 @@ CONSTRAINTS = [
     "CREATE INDEX trial_status IF NOT EXISTS FOR (t:Trial) ON (t.overallStatus)",
     "CREATE INDEX trial_phase  IF NOT EXISTS FOR (t:Trial) ON (t.phase)",
     "CREATE INDEX site_city    IF NOT EXISTS FOR (s:Site)  ON (s.city)",
+    # .key carries the search burden now, on every label written below — a lookup
+    # index makes find_chunks/neighbours a index seek instead of a label scan.
+    "CREATE INDEX trial_key    IF NOT EXISTS FOR (t:Trial)         ON (t.key)",
+    "CREATE INDEX disease_key  IF NOT EXISTS FOR (d:Disease)       ON (d.key)",
+    "CREATE INDEX drug_key     IF NOT EXISTS FOR (d:Drug)          ON (d.key)",
+    "CREATE INDEX sponsor_key  IF NOT EXISTS FOR (s:Sponsor)       ON (s.key)",
+    "CREATE INDEX cro_key      IF NOT EXISTS FOR (c:CRO)           ON (c.key)",
+    "CREATE INDEX country_key  IF NOT EXISTS FOR (c:Country)       ON (c.key)",
+    "CREATE INDEX site_key     IF NOT EXISTS FOR (s:Site)          ON (s.key)",
+    "CREATE INDEX outcome_key  IF NOT EXISTS FOR (o:Outcome)       ON (o.key)",
+    "CREATE INDEX mesh_key     IF NOT EXISTS FOR (m:MeSHTerm)      ON (m.key)",
+    "CREATE INDEX category_key IF NOT EXISTS FOR (c:TrialCategory) ON (c.key)",
 ]
 
 
@@ -223,6 +262,11 @@ def load_trial(session, record: dict) -> None:
     Every node carries `source: "registry"`, which is what separates these facts
     from the claims layer 3 extracts. A query can then ask for one, the other, or
     both — and extraction accuracy can be measured against these.
+
+    Every node also carries `key`, a normalised form of its display name — the
+    same convention layer 3 uses — which is what makes it reachable from
+    store.find_chunks()/neighbours(). The MERGE identity (nctId, name, facility,
+    (measure, nctId)) is unchanged: `key` is for search, not uniqueness.
     """
     trial = record["trial"]
     nct_id = trial["nctId"]
@@ -231,54 +275,64 @@ def load_trial(session, record: dict) -> None:
 
     session.run("""
         MERGE (t:Trial {nctId: $nctId})
-        SET t += $props, t.source = 'registry'
-    """, nctId=nct_id, props={k: v for k, v in trial.items() if k != "nctId"})
+        SET t += $props, t.key = $key, t.source = 'registry'
+    """, nctId=nct_id, key=normalise(nct_id),
+         props={k: v for k, v in trial.items() if k != "nctId"})
 
     # Coarse grouping from the first listed condition, for top-level browsing.
     # Granular targeting is the Disease nodes below.
     category = record["conditions"][0] if record["conditions"] else "Unknown"
     session.run("""
-        MERGE (c:TrialCategory {name: $category}) SET c.source = 'registry'
+        MERGE (c:TrialCategory {name: $category})
+        SET c.key = $key, c.source = 'registry'
         WITH c MATCH (t:Trial {nctId: $nctId})
         MERGE (t)-[:BELONGS_TO]->(c)
-    """, category=category, nctId=nct_id)
+    """, category=category, key=normalise(category), nctId=nct_id)
 
     for condition in record["conditions"]:
         if condition and condition.strip():
+            name = condition.strip()
             session.run("""
-                MERGE (d:Disease {name: $name}) SET d.source = 'registry'
+                MERGE (d:Disease {name: $name})
+                SET d.key = $key, d.source = 'registry'
                 WITH d MATCH (t:Trial {nctId: $nctId})
                 MERGE (t)-[:TARGETS]->(d)
-            """, name=condition.strip(), nctId=nct_id)
+            """, name=name, key=normalise(name), nctId=nct_id)
 
     for intervention in record["interventions"]:
         name = (intervention.get("name") or "").strip()
         if name:
             session.run("""
                 MERGE (d:Drug {name: $name})
-                SET d.type = $type, d.otherNames = $otherNames, d.source = 'registry'
+                SET d.type = $type, d.otherNames = $otherNames,
+                    d.key = $key, d.source = 'registry'
                 WITH d MATCH (t:Trial {nctId: $nctId})
                 MERGE (t)-[:TESTS]->(d)
             """, name=name, type=intervention.get("type"),
-                 otherNames=intervention.get("otherNames", []), nctId=nct_id)
+                 otherNames=intervention.get("otherNames", []),
+                 key=normalise(name), nctId=nct_id)
 
     if record["lead_sponsor"]:
+        name = record["lead_sponsor"].strip()
         session.run("""
-            MERGE (s:Sponsor {name: $name}) SET s.source = 'registry'
+            MERGE (s:Sponsor {name: $name})
+            SET s.key = $key, s.source = 'registry'
             WITH s MATCH (t:Trial {nctId: $nctId})
             MERGE (t)-[:SPONSORED_BY]->(s)
-        """, name=record["lead_sponsor"].strip(), nctId=nct_id)
+        """, name=name, key=normalise(name), nctId=nct_id)
 
     # Not every collaborator is a contract research organisation, but in registered
     # trials most are, and the separate label makes the operational-versus-financial
     # distinction queryable without a free-text search.
     for name in record["collaborators"]:
         if name and name.strip():
+            clean = name.strip()
             session.run("""
-                MERGE (c:CRO {name: $name}) SET c.source = 'registry'
+                MERGE (c:CRO {name: $name})
+                SET c.key = $key, c.source = 'registry'
                 WITH c MATCH (t:Trial {nctId: $nctId})
                 MERGE (t)-[:MANAGED_BY]->(c)
-            """, name=name.strip(), nctId=nct_id)
+            """, name=clean, key=normalise(clean), nctId=nct_id)
 
     for location in record["locations"]:
         country = (location.get("country") or "").strip()
@@ -286,15 +340,16 @@ def load_trial(session, record: dict) -> None:
         if not country:
             continue
         session.run("""
-            MERGE (c:Country {name: $country}) SET c.source = 'registry'
+            MERGE (c:Country {name: $country})
+            SET c.key = $key, c.source = 'registry'
             WITH c MATCH (t:Trial {nctId: $nctId})
             MERGE (t)-[:CONDUCTED_IN]->(c)
-        """, country=country, nctId=nct_id)
+        """, country=country, key=normalise(country), nctId=nct_id)
         if facility:
             session.run("""
                 MERGE (s:Site {facility: $facility})
                 SET s.city = $city, s.zip = $zip, s.lat = $lat, s.lon = $lon,
-                    s.source = 'registry'
+                    s.key = $key, s.source = 'registry'
                 WITH s
                 MATCH (t:Trial {nctId: $nctId})
                 MATCH (c:Country {name: $country})
@@ -302,11 +357,12 @@ def load_trial(session, record: dict) -> None:
                 MERGE (s)-[:IN_COUNTRY]->(c)
             """, facility=facility, city=location.get("city"), zip=location.get("zip"),
                  lat=location.get("lat"), lon=location.get("lon"),
-                 nctId=nct_id, country=country)
+                 key=normalise(facility), nctId=nct_id, country=country)
 
     # Outcomes are MERGEd on (measure, trial) rather than measure alone: "Overall
     # Survival" means something different in each trial, so a shared node would
-    # collapse unrelated endpoints into one.
+    # collapse unrelated endpoints into one. `key` is normalise(measure) alone —
+    # search does not need the same per-trial scoping the MERGE identity does.
     for outcome in record["primary_outcomes"] + record["secondary_outcomes"]:
         measure = (outcome.get("measure") or "").strip()
         if measure:
@@ -314,12 +370,16 @@ def load_trial(session, record: dict) -> None:
                 MATCH (t:Trial {nctId: $nctId})
                 MERGE (o:Outcome {measure: $measure, nctId: $nctId})
                 SET o.description = $description, o.timeFrame = $timeFrame,
-                    o.type = $type, o.source = 'registry'
+                    o.type = $type, o.key = $key, o.source = 'registry'
                 MERGE (t)-[:MEASURES]->(o)
-            """, measure=measure, nctId=nct_id,
+            """, measure=measure, nctId=nct_id, key=normalise(measure),
                  description=outcome.get("description", ""),
                  timeFrame=outcome.get("timeFrame", ""), type=outcome.get("type"))
 
+    # PatientPopulation deliberately gets no `key`. It has no display name a
+    # question would name — it is reached from its Trial via ENROLLS, not
+    # searched for directly — and giving it one risks a collision with Trial's
+    # own key (both would normalise from the same nctId).
     population = record["patient_population"]
     if any(population.values()):
         session.run("""
@@ -333,11 +393,13 @@ def load_trial(session, record: dict) -> None:
     # condition differently, without any fuzzy matching.
     for term in record["mesh_terms"]:
         if term and term.strip():
+            clean = term.strip()
             session.run("""
-                MERGE (m:MeSHTerm {term: $term}) SET m.source = 'registry'
+                MERGE (m:MeSHTerm {term: $term})
+                SET m.key = $key, m.source = 'registry'
                 WITH m MATCH (t:Trial {nctId: $nctId})
                 MERGE (t)-[:INDEXED_AS]->(m)
-            """, term=term.strip(), nctId=nct_id)
+            """, term=clean, key=normalise(clean), nctId=nct_id)
 
 
 def load_trials(session, nct_ids: list[str], verbose: bool = True) -> dict:

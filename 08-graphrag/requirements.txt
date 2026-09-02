@@ -3,3 +3,4 @@ pinecone>=6.0
 openai>=1.60
 requests>=2.31
 pandas>=2.0
+python-dotenv>=1.0

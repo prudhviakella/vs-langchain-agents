@@ -3,17 +3,22 @@
     PDF
      |
      v
-   layout model        finds the boxes, labels them, sets reading order,
-     |                 and links captions to figures      <- selectable
+   PARSE_PIPELINE?
      |
-     +--  TableFormer     rows and columns inside a table box
-     +--  OCR             text on scanned pages with no text layer
-     +--  classifier      chart / photo / logo / diagram
-     +--  CodeFormula     equations and code
+     +-- "" (default)  layout model, finds boxes, labels, reading order,
+     |                 links captions to figures      <- LAYOUT_MODEL selects
+     |                    +--  TableFormer     rows and columns in a table box
+     |                    +--  OCR             text on scanned pages, no layer
+     |                    +--  classifier      chart / photo / logo / diagram
+     |                    +--  CodeFormula     equations and code
      |
+     +-- "vlm"          ONE vision-language model reads each page as an
+     |                  image — replaces every branch above, not a setting
+     |                  on top of them. See _build_vlm_converter.
      v
-   DoclingDocument     a graph of typed objects, not a string
-     |
+   DoclingDocument     a graph of typed objects, not a string — same shape
+     |                 either way, so chunking.py/headings.py/tables.py never
+     |                 know which path produced it
      v
    describe_figures()  vision model, CACHED on the rendered bytes  <- costs money
      |
@@ -139,6 +144,108 @@ CREATE_ORPHAN_CLUSTERS = None if _orphans is None else _orphans == "1"
 # Too high and real exhibits disappear, which looks like a clean parse.
 _threshold = os.getenv("LAYOUT_SCORE_THRESHOLD")
 LAYOUT_SCORE_THRESHOLD = None if _threshold is None else float(_threshold)
+
+# Which parser runs, top to bottom. "" (default) is the layout-detection +
+# TableFormer + OCR stack every setting above configures. "vlm" replaces that
+# ENTIRE stack with a vision-language model reading each page as an image —
+# LAYOUT_MODEL, TABLE_CELL_MATCHING, LAYOUT_SCORE_THRESHOLD and
+# CREATE_ORPHAN_CLUSTERS all become inert under it, because there is no
+# bounding-box detector left for them to configure. Set only one at a time.
+#
+# WHY THIS EXISTS
+#
+# Every false heading found in this pipeline — 'Exhibit 6:', 'through 2024.',
+# the two coloured-box labels — comes from the same source: a bounding-box
+# classifier labelling a region by its VISUAL shape (bold, isolated, larger
+# font) with no notion of what the text around it means. A VLM reads the
+# whole page holistically and can in principle use that context — "this text
+# sits inside a labelled box, inside a numbered exhibit" — the way
+# clean_headings.py's four hand-written rules currently try to approximate
+# after the fact.
+#
+# WHAT IT COSTS, NOT YET MEASURED ON THIS CORPUS
+#
+# A VLM's failure mode is different in kind, not just in rate: not a
+# mislabelled region but hallucinated text, or reading order that drifts on a
+# dense page — a risk that rises with exactly the kind of exhibit-packed
+# layout this pipeline was built for. Unlike a false heading, a hallucination
+# does not show up as a suspicious line in a heading list; it shows up as text
+# that was never on the page. Read the output by hand before trusting it.
+#
+# Requires the vlm extra: pip install "docling[vlm]" transformers. First run
+# downloads Granite-Docling-258M and will be slower per page than the default
+# stack — budget time before running it across a large corpus.
+PARSE_PIPELINE = os.getenv("PARSE_PIPELINE", "").strip().lower()
+
+# Hybrid mode for the VLM pipeline: take STRUCTURE from the model, but take
+# TEXT from the PDF's own text layer instead of the model's generation.
+# Docling's own docs label this "hybrid mode". Only read when
+# PARSE_PIPELINE=vlm; inert otherwise.
+#
+# WHY IT MIGHT MATTER
+#
+# A generative model producing text token by token can hallucinate — a number
+# that was never on the page, rendered in confident, well-formatted prose.
+# Taking text from the extracted layer removes that risk entirely for
+# born-digital PDFs, which is every document in this corpus.
+#
+# force_backend_text IS A DOCUMENTED NO-OP OUTSIDE DOCTAGS MODE, AND THE
+# PRESET DOES NOT SET IT
+#
+# Checked directly on this installation: VlmConvertOptions.from_preset(
+# "granite_docling") leaves response_format=None. The docs are explicit —
+# "when enabled (DOCTAGS format only), bounding boxes from the VLM are used
+# for PDF text extraction." So setting this flag alone, without also forcing
+# DOCTAGS, does nothing. This setting now forces both together; see
+# _build_vlm_converter for where.
+#
+# WHAT IT IS STILL NOT KNOWN TO FIX
+#
+# The measured failure on this corpus was that the VLM pipeline emitted ZERO
+# TABLE elements on a document with three, in two runs — one of which had
+# this flag on without the DOCTAGS precondition it needs, making that run
+# uninformative rather than a real test. Forcing DOCTAGS is the first
+# configuration that actually matches the documented behaviour, but the docs
+# describe it as routing text through deterministic extraction for regions
+# the model ALREADY CALLED a table — not as adding table detection that
+# wasn't happening. Check the TABLE count before concluding anything.
+VLM_FORCE_BACKEND_TEXT = os.getenv("VLM_FORCE_BACKEND_TEXT", "0") == "1"
+
+# Docling's own fix for the flat-heading problem this pipeline has carried as
+# a known limitation since the first parse: every SECTION_HEADER on the PDF
+# path comes back level=1, so `8.2` and `8.3.2` are siblings of `8`, and
+# headings.py has never had a hierarchy to work with.
+#
+# THE MECHANISM, NOT ON THE SAME PATH AS ANYTHING ELSE HERE
+#
+# HeadingHierarchyOptions runs a SEPARATE stage, right after reading order,
+# that REWRITES SectionHeaderItem.level using three signals in priority
+# order: the PDF's own bookmarks/table of contents, then a numbering marker
+# on the heading text itself ('8.2', 'A3a.'), then visual style as a last
+# resort. It does not touch which regions get called headings in the first
+# place — that is still the layout model and clean_headings' job — and it
+# has NO interaction with captions, figure linking, or reading order. Those
+# are a different, non-configurable mechanism entirely (Docling's own
+# maintainers: "isn't user-configurable"). This fixes DEPTH, nothing else.
+#
+# OFF BY DEFAULT — AND DOCLING'S OWN DOCS SAY WHY
+#
+# "a wrong level is worse than a missing one for pipelines already tuned
+# around flat headings." That is this pipeline, exactly: section_id,
+# headings.py's box-label rule, and every heading-path comparison in
+# chunking.py were all measured against flat level=1 output. Turning this on
+# changes what "the heading path" means for every document it touches, and
+# nothing downstream has been re-verified against a hierarchical one yet.
+#
+# THE PRECONDITION THAT IS EASY TO MISS
+#
+# The style fallback signal reads the parsed PDF cells, which Docling drops
+# by default. Forgetting to also set generate_parsed_pages=True makes the
+# THIRD signal silently unavailable — not an error, just one less thing
+# checked. Handled automatically below rather than left as a thing to
+# remember, the same kind of precondition that got missed once already this
+# session on a different setting.
+FIX_HEADING_HIERARCHY = os.getenv("FIX_HEADING_HIERARCHY", "0") == "1"
 
 FIGURE_CACHE = CACHE_DIR / "figures"
 
@@ -563,6 +670,33 @@ def build_pipeline_options():
               "purpose — describe_figures() runs after the parse, cached)",
               flush=True)
 
+    # ── heading hierarchy ────────────────────────────────────────────────
+    # A separate stage from everything above — see FIX_HEADING_HIERARCHY's
+    # own comment for what it does and why it defaults off. Wrapped in
+    # try/except because the class may not exist on every docling version;
+    # a wrong guess here must print a NOTE and leave headings flat, not
+    # crash a batch run the way an unguarded attribute write did once
+    # already this session.
+    if FIX_HEADING_HIERARCHY:
+        try:
+            from docling.datamodel.pipeline_options import HeadingHierarchyOptions
+            opts.heading_hierarchy_options = HeadingHierarchyOptions(enabled=True)
+            # The style-fallback signal needs the parsed PDF cells, which are
+            # dropped by default. Set alongside the feature itself so the
+            # precondition can never be forgotten by whoever flips this flag.
+            opts.generate_parsed_pages = True
+            print("  heading hierarchy: ENABLED — SectionHeaderItem.level will "
+                  "be rewritten from bookmarks, then numbering, then style. "
+                  "This changes what a heading path means for every downstream "
+                  "comparison; re-check headings.py's rules and chunking.py's "
+                  "merge behaviour against the new output before trusting it.",
+                  flush=True)
+        except Exception as exc:
+            print(f"  NOTE: FIX_HEADING_HIERARCHY=1 but HeadingHierarchyOptions "
+                  f"is not available on this docling version "
+                  f"({type(exc).__name__}: {exc}). Headings remain flat.",
+                  flush=True)
+
     return opts
 
 
@@ -603,6 +737,16 @@ def describe_pipeline(opts) -> None:
           f"{getattr(layout, 'create_orphan_clusters', '(absent)')}", flush=True)
     print(f"    {'keep_empty_clusters':<30}"
           f"{getattr(layout, 'keep_empty_clusters', '(absent)')}", flush=True)
+
+    # Same read-from-the-object discipline as everything above: this reports
+    # what opts actually carries, not what FIX_HEADING_HIERARCHY asked for —
+    # those can differ if the class was unavailable and build_pipeline_options
+    # already printed a NOTE about it.
+    heading_opts = getattr(opts, "heading_hierarchy_options", None)
+    print(f"    {'heading hierarchy enabled':<30}"
+          f"{getattr(heading_opts, 'enabled', False)}", flush=True)
+    print(f"    {'generate_parsed_pages':<30}"
+          f"{getattr(opts, 'generate_parsed_pages', '(absent)')}", flush=True)
 
 
 def _page_fraction(item, doc) -> float:
@@ -764,6 +908,174 @@ def describe_figures(doc) -> None:
               flush=True)
 
 
+def _build_vlm_converter():
+    """A DocumentConverter running the VLM pipeline instead of the default stack.
+
+        page image  ->  Granite-Docling-258M  ->  DoclingDocument
+
+    ONE model reads each page as an image and produces structure directly.
+    This REPLACES layout detection, TableFormer and OCR — not a setting on top
+    of them. Every LAYOUT_MODEL / TABLE_CELL_MATCHING / LAYOUT_SCORE_THRESHOLD
+    / CREATE_ORPHAN_CLUSTERS setting is inert here; there is no bounding-box
+    detector left for them to reach. If any of those are also set, that is
+    reported by the caller so it does not fail silently.
+
+    Returns None, with a printed reason, if the vlm extra is not installed —
+    this must not raise and abort a batch run over one missing dependency.
+    """
+    try:
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import (
+            VlmConvertOptions, VlmPipelineOptions,
+        )
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.pipeline.vlm_pipeline import VlmPipeline
+    except ImportError as exc:
+        print(f"  NOTE: PARSE_PIPELINE=vlm but the vlm extra is not installed "
+              f"({exc}). Run: pip install \"docling[vlm]\" transformers. "
+              "Falling back to the default pipeline.", flush=True)
+        return None
+
+    # granite_docling is IBM's own model for this pipeline, small as VLMs go
+    # (258M params) and the one the CLI defaults to. Auto-selects Transformers,
+    # MLX or vLLM depending on what is available in this environment.
+    vlm_options = VlmConvertOptions.from_preset("granite_docling")
+    print("  parser: VLM pipeline (granite_docling) — replaces layout "
+          "detection, TableFormer and OCR entirely", flush=True)
+
+    # These configure a bounding-box detector that does not exist on this
+    # path. Set alongside PARSE_PIPELINE=vlm they would silently do nothing —
+    # reported here rather than left for someone to notice the hard way.
+    inert = [name for name, value in (
+        ("LAYOUT_MODEL", LAYOUT_MODEL), ("TABLE_CELL_MATCHING", None),
+        ("LAYOUT_SCORE_THRESHOLD", LAYOUT_SCORE_THRESHOLD),
+        ("CREATE_ORPHAN_CLUSTERS", CREATE_ORPHAN_CLUSTERS))
+        if (name == "TABLE_CELL_MATCHING"
+            and os.getenv("TABLE_CELL_MATCHING") is not None)
+        or (name != "TABLE_CELL_MATCHING" and value)]
+    if inert:
+        print(f"  NOTE: {', '.join(inert)} set but ignored under the VLM "
+              "pipeline — there is no bounding-box detector for them to "
+              "configure.", flush=True)
+
+    # Built as a dict first so an unsupported field on this docling version
+    # degrades to a printed note rather than a TypeError that aborts the run.
+    vlm_pipeline_kwargs = {"vlm_options": vlm_options}
+    if VLM_FORCE_BACKEND_TEXT:
+        if "force_backend_text" not in getattr(VlmPipelineOptions, "model_fields", {}):
+            print("  NOTE: VLM_FORCE_BACKEND_TEXT=1 but this docling version's "
+                  "VlmPipelineOptions has no force_backend_text field; "
+                  "ignoring.", flush=True)
+        else:
+            # force_backend_text is a documented no-op outside DOCTAGS mode —
+            # "when enabled (DOCTAGS format only), bounding boxes from the VLM
+            # are used for PDF text extraction". Checked directly on this
+            # installation: the granite_docling preset leaves response_format
+            # unset by default.
+            #
+            # WRONG THE FIRST TIME — LEAVING THE RECORD
+            #
+            # response_format is NOT a field on VlmConvertOptions itself. It
+            # lives one level down, on vlm_options.model_spec. A diagnostic
+            # print of `getattr(vlm_options, "response_format", None)`
+            # returned None — which looked like confirmation the field
+            # existed and was unset. It was actually the getattr FALLBACK,
+            # because the field is not there at all: setting it directly
+            # raised `ValueError: "VlmConvertOptions" object has no field
+            # "response_format"`. The real field was visible the whole time,
+            # one line down, in the repr of model_spec — missed because it
+            # was truncated on screen and not looked at closely enough.
+            #
+            # So this now writes to model_spec, wrapped in a blanket
+            # try/except with no assumption that this location is right
+            # either. A second wrong guess must degrade to a printed NOTE and
+            # a normal parse, not a second crash.
+            try:
+                from docling.datamodel.pipeline_options_vlm_model import ResponseFormat
+                vlm_options.model_spec.response_format = ResponseFormat.DOCTAGS
+                vlm_pipeline_kwargs["force_backend_text"] = True
+                print("  VLM hybrid mode: model_spec.response_format forced "
+                      "to DOCTAGS (the preset leaves it unset, and "
+                      "force_backend_text is documented as a no-op outside "
+                      "DOCTAGS mode) — structure from the model, text from "
+                      "the PDF's own text layer.", flush=True)
+            except Exception as exc:
+                print(f"  NOTE: could not force DOCTAGS mode on this docling "
+                      f"version ({type(exc).__name__}: {exc}). "
+                      "force_backend_text left off, since it is a documented "
+                      "no-op without it. Parsing continues without hybrid "
+                      "mode.", flush=True)
+
+    return DocumentConverter(format_options={
+        InputFormat.PDF: PdfFormatOption(
+            pipeline_cls=VlmPipeline,
+            pipeline_options=VlmPipelineOptions(**vlm_pipeline_kwargs),
+        )
+    })
+
+
+def report_confidence(result) -> None:
+    """Print Docling's own self-assessment of this parse, page by page.
+
+        ConversionResult.confidence
+              |
+              +-- document-level: mean_grade, low_grade, four component scores
+              +-- .pages[N]: the SAME report, per page
+
+    THIS IS A TRIAGE SIGNAL, NOT A FIX
+
+    It tells you WHERE to look, not what is wrong, and it does not correct
+    anything. A page can score EXCELLENT and still feed the sidebar-merge bug
+    or the caption-ordering bug this pipeline has — those are defects in OUR
+    chunking code, three functions downstream of the parse, and Docling's
+    confidence is about its own output, not about what chunking.py later does
+    with it. Read this as: which pages are worth ten minutes of manual
+    reading, not: this document is fine.
+
+    WHAT NAN MEANS — UNCONFIRMED, STATED AS A WORKING ASSUMPTION
+    Measured on a 15-page document with no tables: `table_score` and
+    `ocr_score` both came back `nan`, not a low number. The working read is
+    that `nan` means "this component did not apply" — no tables to score, no
+    OCR needed on that page — not "this component failed." That has not been
+    confirmed against a document known to contain real tables. Until it is,
+    treat a nan component as neutral, never as a failure, and do not let it
+    pull an average down.
+
+    Silent by design if `result.confidence` does not exist on this docling
+    version — this must never be the reason a parse fails.
+    """
+    confidence = getattr(result, "confidence", None)
+    if confidence is None:
+        return
+
+    mean_grade = getattr(confidence, "mean_grade", None)
+    low_grade = getattr(confidence, "low_grade", None)
+    if mean_grade is None and low_grade is None:
+        return
+
+    print(f"  confidence: mean={mean_grade} low={low_grade}", flush=True)
+
+    # Flag individual pages worth a human look, rather than making someone
+    # read the whole per-page dict by hand. FAIR/POOR are read from the enum
+    # member's own name, so this does not depend on knowing the exact
+    # QualityGrade class or import path — only that grades are comparable by
+    # their string name, which the earlier probe confirmed.
+    pages = getattr(confidence, "pages", None) or {}
+    flagged = []
+    for page_no, page_report in pages.items():
+        page_low = getattr(page_report, "low_grade", None)
+        name = getattr(page_low, "name", str(page_low)).upper()
+        if name in ("FAIR", "POOR"):
+            flagged.append((page_no, name))
+
+    if flagged:
+        flagged.sort(key=lambda p: p[0])
+        summary = ", ".join(f"p{n} ({g})" for n, g in flagged[:10])
+        more = f" (+{len(flagged) - 10} more)" if len(flagged) > 10 else ""
+        print(f"  NOTE: {len(flagged)} page(s) below GOOD, worth a manual "
+              f"look: {summary}{more}", flush=True)
+
+
 def parse_pdf(pdf: Path):
     """Parse a PDF into a DoclingDocument.
 
@@ -847,18 +1159,37 @@ def parse_pdf(pdf: Path):
 
     On AWS, a retried task re-parses from scratch — but reads every figure
     description from the cache, so the retry is free of API cost.
-    """
-    from docling.datamodel.base_models import InputFormat
-    from docling.document_converter import DocumentConverter, PdfFormatOption
 
+    PARSE_PIPELINE=vlm skips every model above and replaces the whole stack
+    with one vision-language model reading each page as an image. See
+    _build_vlm_converter. describe_figures() below is unaffected either way —
+    it runs after the parse regardless of which stack produced the document,
+    against a PictureItem's rendered image, which both paths generate.
+    """
     check_model_access()
-    options = build_pipeline_options()
-    describe_pipeline(options)
-    converter = DocumentConverter(format_options={
-        InputFormat.PDF: PdfFormatOption(pipeline_options=options)
-    })
+
+    converter = None
+    if PARSE_PIPELINE == "vlm":
+        converter = _build_vlm_converter()
+        # Import failed and was already reported by _build_vlm_converter.
+        # Fall through to the default stack below rather than abort the run
+        # over one missing extra.
+
+    if converter is None:
+        if PARSE_PIPELINE and PARSE_PIPELINE != "vlm":
+            print(f"  NOTE: PARSE_PIPELINE={PARSE_PIPELINE!r} not recognised; "
+                  "using the default pipeline", flush=True)
+        options = build_pipeline_options()
+        describe_pipeline(options)
+        from docling.datamodel.base_models import InputFormat
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        converter = DocumentConverter(format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=options)
+        })
+
     started = time.time()
-    doc = converter.convert(str(pdf)).document
+    result = converter.convert(str(pdf))
+    doc = result.document
     elapsed = time.time() - started
     pages = len(doc.pages)
     print(f"  parsed in {elapsed:.0f}s  ({elapsed / max(pages, 1):.0f}s per page)",
@@ -869,6 +1200,8 @@ def parse_pdf(pdf: Path):
         print("  SLOW. Run `python profile_parse.py <pdf>` to see which "
               "enrichment is costing this — it times each one separately.",
               flush=True)
+
+    report_confidence(result)
 
     if CACHE_FIGURE_DESCRIPTIONS:
         describe_figures(doc)
