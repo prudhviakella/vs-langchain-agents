@@ -1,6 +1,8 @@
-neo4j>=5.20
+docling>=2.55
+docling-core[chunking]>=2.50
 pinecone>=6.0
 openai>=1.60
-requests>=2.31
-pandas>=2.0
-python-dotenv>=1.0
+tiktoken>=0.8
+numpy>=1.26
+boto3>=1.35
+pypdf>=5.0
