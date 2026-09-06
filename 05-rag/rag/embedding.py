@@ -63,7 +63,7 @@ def _cache_path(digest: str) -> Path:
     return shard / (digest + ".npy")
 
 
-def _batches(texts: list[str]) -> list[list[int]]:
+def _batches(texts: list[str], max_inputs: int | None = None) -> list[list[int]]:
     """Group text indices into requests within both API limits.
 
     The embeddings endpoint bounds a request two ways — by number of inputs and by
@@ -71,13 +71,19 @@ def _batches(texts: list[str]) -> list[list[int]]:
     thousand short strings hit the input cap; fifty long chunks hit the token cap.
     Closing the batch on whichever comes first is why this is not just a fixed size.
 
+    `max_inputs` tightens the count limit below the API's own ceiling. embed_stream
+    passes its window size here so peak memory stays bounded by the window rather
+    than by whatever OPENAI_EMBED_MAX_INPUTS happens to be — a smaller batch is
+    always valid, so this only ever makes requests safer, never larger.
+
     Returns indices rather than the texts themselves so the caller can write results
     back into the right positions.
     """
+    input_cap = min(OPENAI_EMBED_MAX_INPUTS, max_inputs or OPENAI_EMBED_MAX_INPUTS)
     groups, current, tokens = [], [], 0
     for i, text in enumerate(texts):
         cost = len(ENCODING.encode(text))
-        if current and (len(current) >= OPENAI_EMBED_MAX_INPUTS
+        if current and (len(current) >= input_cap
                         or tokens + cost > OPENAI_EMBED_MAX_TOKENS):
             groups.append(current)
             current, tokens = [], 0
@@ -171,6 +177,29 @@ def embed_stream(texts: list[str], batch: int = 512, use_cache: bool = True):
     is exactly what decides whether a Fargate task fits its memory limit.
 
     Windowing keeps that flat regardless of how long the document is.
+
+    WHY `batch` IS A CEILING, NOT THE ACTUAL SLICE SIZE
+
+    Slicing purely by COUNT is what broke two documents in a 20-document run:
+
+        Requested 458743 tokens, max 300000 tokens per request
+        Requested 312649 tokens, max 300000 tokens per request
+
+    512 chunks at up to CHUNK_TOKENS each is ~524,000 tokens in one request —
+    well past OpenAI's hard limit — and neither document had an oversized
+    record. Every chunk was individually fine; the AGGREGATE was not.
+
+    `_batches()` below already solves this exactly, closing a batch before
+    adding a text that would push it over OPENAI_EMBED_MAX_TOKENS. This
+    function used to bypass it entirely and slice by count instead, so the
+    token budget was never consulted on this code path at all. It now defers
+    to `_batches()` for the real split and treats `batch` as an upper bound on
+    the count, so both limits hold: never more than `batch` texts, and never
+    more than the token budget, whichever binds first.
     """
-    for start in range(0, len(texts), batch):
-        yield start, embed(texts[start:start + batch], use_cache=use_cache)
+    for group in _batches(texts, max_inputs=batch):
+        # _batches yields index lists, contiguous and in order, so the first
+        # index is the offset the caller needs to line vectors up with its own
+        # records.
+        start = group[0]
+        yield start, embed([texts[i] for i in group], use_cache=use_cache)
