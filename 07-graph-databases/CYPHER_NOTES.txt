@@ -108,6 +108,8 @@ RETURN c;
 // Properties are TYPED. Cypher supports several types, and the type matters
 // because it decides what you can do with the value.
 
+
+
 MATCH (c:Customer {customerId: 3068})
 SET c.loyaltyPoints = 17064,                    // integer
     c.lifetimeRevenue = 24338.54,               // float  (decimal point)

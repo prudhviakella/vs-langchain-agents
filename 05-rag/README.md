@@ -88,11 +88,16 @@ Checkers, none of which need API keys:
 
 | Script | What |
 |---|---|
-| `check_config.py` | what settings are actually in effect |
-| `check_wiring.py` | is the loaded code the code on disk |
-| `check_chunks.py` | names which of six chunking failures you have |
-| `profile_parse.py` | times each enrichment separately |
-| `diagnose_figure.py` | why one figure has no description |
+| `checks/check_config.py` | what settings are actually in effect |
+| `checks/check_wiring.py` | is the loaded code the code on disk |
+| `checks/check_chunks.py` | names which of six chunking failures you have |
+| `checks/check_heading_options.py` | every heading-hierarchy option this docling version has |
+| `checks/check_confidence.py` | docling's own per-page parse confidence |
+| `checks/check_index_contents.py` | which documents actually reached the index |
+| `checks/check_neighbors.py` | does prev/next expansion fire on real results |
+| `checks/dump_chunks.py` | every indexed chunk for one document, to JSON |
+| `checks/profile_parse.py` | times each enrichment separately |
+| `checks/diagnose_figure.py` | why one figure has no description |
 
 ---
 
@@ -163,7 +168,7 @@ hyphenated label names that Docling's label map does not normalise.
 
 ## Settings
 
-Everything is an environment variable. `python check_config.py` prints all of
+Everything is an environment variable. `python checks/check_config.py` prints all of
 them, the environment value, and whether they agree — they disagree more often
 than you would think, because each module reads the environment once, at import.
 
@@ -248,7 +253,7 @@ Every enrichment is a **model pass, on CPU, per element**. Find out which,
 rather than guessing:
 
 ```bash
-python profile_parse.py pdfs/your.pdf
+python checks/profile_parse.py pdfs/your.pdf
 ```
 
 **Conditional or unconditional is the distinction that matters.** Some models
@@ -298,12 +303,12 @@ can catch. A box label inside an exhibit reads exactly like a real heading.
 Then:
 
 ```bash
-python check_config.py
-python check_wiring.py
-python check_chunks.py reports/<doc>/<doc>.chunks.json
+python checks/check_config.py
+python checks/check_wiring.py
+python checks/check_chunks.py reports/<doc>/<doc>.chunks.json
 ```
 
-`check_chunks.py` names which of six failures you have, and each has a different
+`checks/check_chunks.py` names which of six failures you have, and each has a different
 fix. It reads only the reports, so it needs no keys and no parse.
 
 ---

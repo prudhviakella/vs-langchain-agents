@@ -32,7 +32,7 @@ So setting an environment variable in a notebook cell AFTER importing the
 package has no effect, and nothing warns you — the package simply keeps what
 it read. Set them first, or restart the kernel.
 
-Run `python check_config.py` to see what is actually in effect versus what
+Run `python checks/check_config.py` to see what is actually in effect versus what
 the environment says.
 
 
@@ -239,7 +239,7 @@ FIGURE_RENDER_SCALE = float(os.getenv("FIGURE_RENDER_SCALE", "2.0"))
 # is 17 crops rendered at 2x, then classified, then chart-extracted, then sent
 # to a vision model. Four passes over each figure.
 #
-# Measure before deciding. `python profile_parse.py your.pdf` times each flag
+# Measure before deciding. `python checks/profile_parse.py your.pdf` times each flag
 # separately on your machine with your document, and prints what each one adds.
 #
 #   TABLE_MODE_ACCURATE   materially better on nested headers, and several

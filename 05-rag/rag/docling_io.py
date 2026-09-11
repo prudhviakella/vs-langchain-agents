@@ -247,6 +247,151 @@ VLM_FORCE_BACKEND_TEXT = os.getenv("VLM_FORCE_BACKEND_TEXT", "0") == "1"
 # session on a different setting.
 FIX_HEADING_HIERARCHY = os.getenv("FIX_HEADING_HIERARCHY", "0") == "1"
 
+# Override the numbering-scheme precedence the hierarchy stage uses to rank
+# heading markers. Comma-separated, highest level first. Empty means Docling's
+# default order:
+#
+#     part -> chapter -> article -> roman_u -> arabic -> alpha_u -> alpha_l -> roman_l
+#     PART I  CHAPTER 1  ARTICLE 1    I.        1.        A.         (a)        (i)
+#
+# WHY THIS IS NOT ALWAYS RIGHT
+#
+# roman_u outranks arabic by default, which is correct for legal documents
+# where `I.` genuinely IS the top level. It is wrong for a document numbering
+# its own sections in Arabic that happens to embed an appendix using Roman
+# numerals internally.
+#
+# Measured on a 112-page clinical protocol: the RECIST appendix numbers its
+# own subsections I./II./III. Because roman_u outranks arabic, `I. Disease
+# Parameters` was assigned the same depth as `8 Appendices` and REPLACED it in
+# the heading stack:
+#
+#     8 Appendices > 8.5 RECIST 1.1 and irRECIST Guidelines      correct
+#     I. Disease Parameters for RECIST 1.1                       <- root lost
+#     I. Baseline Assessments in irRECIST > 8.8 List of Abbrev.  <- inverted
+#
+# 28 of 278 chunks (10.1%, pages 100-110) inherited a broken root, and three
+# genuine section-8 headings ended up nested under a subsection that had ended
+# pages earlier. The stack only recovered at `9 References`.
+#
+# Moving arabic above roman_u fixes it while leaving the appendix's own
+# internal I. -> A. -> 1. hierarchy intact:
+#
+#     DOCLING_NUMBERING_SCHEMES=arabic,roman_u,alpha_u,alpha_l,roman_l
+#
+# Dropping roman_u below alpha_u as well would fix the same bug but invert the
+# appendix internally, so prefer the narrower change.
+DOCLING_NUMBERING_SCHEMES = [
+    s.strip() for s in os.getenv("DOCLING_NUMBERING_SCHEMES", "").split(",") if s.strip()
+]
+
+# The third and weakest signal — font size, weight, slant, letter case — used
+# only for headings that have neither a bookmark match nor a recognizable
+# numbering marker.
+#
+# Docling's own guidance: "Legal filings with immaculate numbering and erratic
+# typography do better with use_style=False." A numbered clinical protocol is
+# that shape of document — when numbering already has the right answer for
+# nearly every heading, style can only add noise on the remainder.
+#
+# Set to 0 to test whether style is contributing to a hierarchy problem.
+# generate_parsed_pages is still set below either way; it costs little and
+# leaves the option available without a re-parse.
+DOCLING_HEADING_USE_STYLE = os.getenv("DOCLING_HEADING_USE_STYLE", "1") == "1"
+
+# How close a PDF bookmark's title must be to a detected heading before Docling
+# treats the bookmark as authoritative for that heading. 0-1, default 0.8.
+#
+# WHY LOWERING IT CAN FIX A HIERARCHY THAT NUMBERING CANNOT
+#
+# Bookmarks rank ABOVE both numbering and style. When one matches, the outline
+# — the author's own declared hierarchy — wins outright, and every collision
+# between competing numbering schemes becomes irrelevant.
+#
+# The NSCLC protocol carries a complete five-level outline: 1 Background
+# through 9 References, with 8 Appendices properly containing 8.1-8.8. It does
+# NOT contain `I. Disease Parameters`, `21.`, `26.`, `NOTE 2:` or `TO:` — the
+# outline already knows those are not sections. Every heading problem measured
+# on that document is a numbering-inference problem the outline sidesteps.
+#
+# Matching can still fail on title similarity. Docling compares titles with
+# and without their numbering prefix, but small differences still count: the
+# outline entry `6  Study Drug Preparation and Administration` carries a
+# double space the detected heading may not have. And when the backend
+# supplies no page numbers — the docling-parse backends read a native ToC with
+# titles and hierarchy but no positions — matching falls back to titles alone
+# with a stricter threshold to compensate.
+#
+# Lowering this admits looser matches. Too low and a bookmark claims the wrong
+# heading, which is its own kind of wrong; 0.6 is a reasonable first step down
+# from the 0.8 default.
+_threshold = os.getenv("DOCLING_BOOKMARK_THRESHOLD")
+DOCLING_BOOKMARK_THRESHOLD = None if _threshold is None else float(_threshold)
+
+# Deepest heading level assigned; anything deeper is clamped. Docling's default
+# is 6.
+#
+# The NSCLC protocol's deepest legitimate path is 4.3.1.2.1 — five levels. A
+# lower ceiling clamps over-deep nesting in an appendix without touching the
+# main protocol, which is a blunter instrument than fixing the scheme ranking
+# but does not depend on getting the ranking right.
+_max_level = os.getenv("DOCLING_HEADING_MAX_LEVEL")
+DOCLING_HEADING_MAX_LEVEL = None if _max_level is None else int(_max_level)
+
+# Which PDF backend reads the file. "" uses whatever docling picks by default.
+# "pypdfium2" selects PyPdfiumDocumentBackend.
+#
+# WHY THIS MATTERS FOR HEADING HIERARCHY SPECIFICALLY
+#
+# Docling's own docs on the bookmark signal:
+#
+#   "The pypdfium2 backend returns the richest outline: title, depth, target
+#    page and vertical position. The docling-parse backends read their own
+#    native table of contents, which carries titles and hierarchy but no page
+#    numbers — matching then falls back to titles alone, with a stricter
+#    similarity threshold to compensate."
+#
+# So the backend decides whether bookmark matching has page numbers to work
+# with. On a document whose outline is correct but whose headings are not
+# matching it, this is a more promising lever than bookmark_match_threshold —
+# a stricter INTERNAL threshold applies on the title-only path regardless of
+# what the option is set to, which would explain a threshold change having no
+# measurable effect.
+#
+# Measured on the NSCLC protocol: the PDF carries a complete 5-level outline
+# (1 Background .. 9 References, with 8 Appendices containing 8.1-8.8) that
+# does NOT contain the RECIST appendix's I./II./III. markers. Sections 1-9
+# come out clean; the appendix does not. Whether that is a matching failure or
+# simply the outline's granularity is what changing this setting tests.
+DOCLING_PDF_BACKEND = os.getenv("DOCLING_PDF_BACKEND", "").strip().lower()
+
+# The first and normally authoritative signal — the PDF's own outline.
+#
+# WHY TURNING IT OFF IS WORTH TESTING RATHER THAN ASSUMED HARMFUL
+#
+# Bookmarks rank above numbering and style, so when one matches a heading it
+# decides that heading's level outright. That is usually what you want: the
+# outline is the author's own declared hierarchy.
+#
+# But the docs also note bookmarks can PROMOTE a mis-classified list item to a
+# section header — "the only structural change the stage ever makes" — and
+# matching is fuzzy, by title similarity. A bookmark that matches the WRONG
+# heading, or promotes something that should have stayed a list item, is a
+# failure that no amount of numbering tuning can reach, because numbering
+# never runs for a heading a bookmark already claimed.
+#
+# On the NSCLC protocol every numbering-side lever was tried and none improved
+# on the default. That is consistent with bookmarks already deciding these
+# headings — in which case the numbering settings were aimed at a signal that
+# never ran. Turning bookmarks off is the one way to find out: if the result
+# changes at all, bookmarks were in play; if it is identical, they were not,
+# and the RECIST subsections genuinely fall through to numbering.
+#
+# Either answer is worth having. Expect a WORSE overall result when off —
+# sections 1-9 currently come out clean and the outline is likely why — so
+# this is a diagnostic, not a fix.
+DOCLING_HEADING_USE_BOOKMARKS = os.getenv("DOCLING_HEADING_USE_BOOKMARKS", "1") == "1"
+
 FIGURE_CACHE = CACHE_DIR / "figures"
 
 
@@ -680,13 +825,75 @@ def build_pipeline_options():
     if FIX_HEADING_HIERARCHY:
         try:
             from docling.datamodel.pipeline_options import HeadingHierarchyOptions
-            opts.heading_hierarchy_options = HeadingHierarchyOptions(enabled=True)
+
+            # Built as a dict so an option missing on this docling version
+            # degrades to a printed note rather than a TypeError that aborts
+            # the run. Only fields actually supported are passed.
+            hh_kwargs = {"enabled": True}
+            supported = getattr(HeadingHierarchyOptions, "model_fields", {})
+
+            if DOCLING_NUMBERING_SCHEMES:
+                if "numbering_schemes" in supported:
+                    hh_kwargs["numbering_schemes"] = DOCLING_NUMBERING_SCHEMES
+                else:
+                    print("  NOTE: DOCLING_NUMBERING_SCHEMES set but this docling "
+                          "version's HeadingHierarchyOptions has no "
+                          "numbering_schemes field; using the default order.",
+                          flush=True)
+
+            if not DOCLING_HEADING_USE_STYLE:
+                if "use_style" in supported:
+                    hh_kwargs["use_style"] = False
+                else:
+                    print("  NOTE: DOCLING_HEADING_USE_STYLE=0 but this docling "
+                          "version has no use_style field; style stays on.",
+                          flush=True)
+
+            if not DOCLING_HEADING_USE_BOOKMARKS:
+                if "use_bookmarks" in supported:
+                    hh_kwargs["use_bookmarks"] = False
+                else:
+                    print("  NOTE: DOCLING_HEADING_USE_BOOKMARKS=0 but this docling "
+                          "version has no use_bookmarks field; bookmarks stay on.",
+                          flush=True)
+
+            if DOCLING_HEADING_MAX_LEVEL is not None:
+                if "max_level" in supported:
+                    hh_kwargs["max_level"] = DOCLING_HEADING_MAX_LEVEL
+                else:
+                    print("  NOTE: DOCLING_HEADING_MAX_LEVEL set but this docling "
+                          "version has no max_level field; using the default.",
+                          flush=True)
+
+            if DOCLING_BOOKMARK_THRESHOLD is not None:
+                if "bookmark_match_threshold" in supported:
+                    hh_kwargs["bookmark_match_threshold"] = DOCLING_BOOKMARK_THRESHOLD
+                else:
+                    print("  NOTE: DOCLING_BOOKMARK_THRESHOLD set but this docling "
+                          "version has no bookmark_match_threshold field; using "
+                          "the default.", flush=True)
+
+            opts.heading_hierarchy_options = HeadingHierarchyOptions(**hh_kwargs)
             # The style-fallback signal needs the parsed PDF cells, which are
             # dropped by default. Set alongside the feature itself so the
             # precondition can never be forgotten by whoever flips this flag.
             opts.generate_parsed_pages = True
-            print("  heading hierarchy: ENABLED — SectionHeaderItem.level will "
-                  "be rewritten from bookmarks, then numbering, then style. "
+
+            detail = []
+            if "numbering_schemes" in hh_kwargs:
+                detail.append(f"scheme order {','.join(DOCLING_NUMBERING_SCHEMES)}")
+            if "use_style" in hh_kwargs:
+                detail.append("style signal OFF")
+            if "bookmark_match_threshold" in hh_kwargs:
+                detail.append(f"bookmark threshold {DOCLING_BOOKMARK_THRESHOLD}")
+            if "max_level" in hh_kwargs:
+                detail.append(f"max_level {DOCLING_HEADING_MAX_LEVEL}")
+            if "use_bookmarks" in hh_kwargs:
+                detail.append("bookmarks OFF")
+            suffix = f" ({'; '.join(detail)})" if detail else ""
+
+            print(f"  heading hierarchy: ENABLED{suffix} — SectionHeaderItem.level "
+                  "will be rewritten from bookmarks, then numbering, then style. "
                   "This changes what a heading path means for every downstream "
                   "comparison; re-check headings.py's rules and chunking.py's "
                   "merge behaviour against the new output before trusting it.",
@@ -745,6 +952,16 @@ def describe_pipeline(opts) -> None:
     heading_opts = getattr(opts, "heading_hierarchy_options", None)
     print(f"    {'heading hierarchy enabled':<30}"
           f"{getattr(heading_opts, 'enabled', False)}", flush=True)
+    print(f"    {'  numbering_schemes':<30}"
+          f"{getattr(heading_opts, 'numbering_schemes', '(absent)')}", flush=True)
+    print(f"    {'  use_bookmarks':<30}"
+          f"{getattr(heading_opts, 'use_bookmarks', '(absent)')}", flush=True)
+    print(f"    {'  use_style':<30}"
+          f"{getattr(heading_opts, 'use_style', '(absent)')}", flush=True)
+    print(f"    {'  bookmark_match_threshold':<30}"
+          f"{getattr(heading_opts, 'bookmark_match_threshold', '(absent)')}", flush=True)
+    print(f"    {'  max_level':<30}"
+          f"{getattr(heading_opts, 'max_level', '(absent)')}", flush=True)
     print(f"    {'generate_parsed_pages':<30}"
           f"{getattr(opts, 'generate_parsed_pages', '(absent)')}", flush=True)
 
@@ -1183,8 +1400,29 @@ def parse_pdf(pdf: Path):
         describe_pipeline(options)
         from docling.datamodel.base_models import InputFormat
         from docling.document_converter import DocumentConverter, PdfFormatOption
+
+        # The backend is a PdfFormatOption parameter, not a pipeline option —
+        # it decides which library reads the PDF, before any model runs. See
+        # DOCLING_PDF_BACKEND for why it matters to heading hierarchy.
+        format_kwargs = {"pipeline_options": options}
+        if DOCLING_PDF_BACKEND == "pypdfium2":
+            try:
+                from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
+                format_kwargs["backend"] = PyPdfiumDocumentBackend
+                print("  pdf backend: pypdfium2 (richest outline — title, depth, "
+                      "target page and vertical position, so bookmark matching "
+                      "has page numbers to work with)", flush=True)
+            except ImportError as exc:
+                print(f"  NOTE: DOCLING_PDF_BACKEND=pypdfium2 but the backend "
+                      f"could not be imported ({exc}); using the default.",
+                      flush=True)
+        elif DOCLING_PDF_BACKEND:
+            print(f"  NOTE: DOCLING_PDF_BACKEND={DOCLING_PDF_BACKEND!r} not "
+                  "recognised (expected 'pypdfium2' or unset); using the "
+                  "default backend.", flush=True)
+
         converter = DocumentConverter(format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=options)
+            InputFormat.PDF: PdfFormatOption(**format_kwargs)
         })
 
     started = time.time()
@@ -1197,7 +1435,7 @@ def parse_pdf(pdf: Path):
     # Above roughly 30s a page something is running that probably should not
     # be. Every enrichment is a model pass on CPU, per element.
     if elapsed / max(pages, 1) > 30:
-        print("  SLOW. Run `python profile_parse.py <pdf>` to see which "
+        print("  SLOW. Run `python checks/profile_parse.py <pdf>` to see which "
               "enrichment is costing this — it times each one separately.",
               flush=True)
 

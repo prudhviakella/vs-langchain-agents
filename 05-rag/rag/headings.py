@@ -141,6 +141,7 @@ MAX_HEADING_CHARS = 120
 NUMBERED_SECTION = re.compile(r"^(\d+(\.\d+)*|[A-Z]\d*[a-z]?)[.)]?\s+\S")
 
 
+
 def why_not_a_heading(text: str) -> str | None:
     """Reason this text is not a section heading, or None if it might be.
 
