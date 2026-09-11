@@ -70,7 +70,7 @@ from docling_core.types.doc import PictureItem
 from .config import (ACCESS_GROUPS, CHUNK_TOKENS, EMBED_MODEL, ENCODING,
                      PINECONE_METADATA_BYTES)
 from .docling_io import chart_data, picture_description
-from .headings import clean_headings
+from .headings import clean_headings, renumber_from_text
 from .tables import (needs_summary, summarize_table, summarize_table_image,
                      table_cells, table_looks_broken, table_markdown, table_ref_of)
 
@@ -91,6 +91,18 @@ MERGE_ACROSS_EXHIBITS = True
 # 0 = off. Above 0, a record under this size absorbs the next one even across
 # a heading boundary. Set per corpus: a form wants a floor, a report does not.
 MIN_CHUNK_TOKENS = int(os.getenv("MIN_CHUNK_TOKENS", "0"))
+
+# Recompute heading levels from each heading's own numbering, after
+# clean_headings and before the chunker runs. See headings.renumber_from_text
+# for the measurements — Docling's own assignment put top-level sections at
+# inconsistent depths (1 Background at 2, 2 Study Rationale at 1) and let an
+# appendix's Roman numerals sit at the same level as the section containing
+# them, so they REPLACED it. All on a document whose numbering states its own
+# depth unambiguously.
+#
+# Only acts on documents that are actually numbered; below a threshold share of
+# numbered headings the pass leaves Docling's inference alone.
+RENUMBER_HEADINGS = os.getenv("RENUMBER_HEADINGS", "0") == "1"
 
 # Page furniture. Every pattern came from a real chunk in a real run. Anchored
 # at the start, and gated by the token ceiling above, because a pattern that is
@@ -855,6 +867,19 @@ def build_records(doc, pdf: Path, doc_id: str, doc_date: str,
     # model got wrong is both a boundary that should not exist and a wrong
     # string prepended into every vector beneath it.
     clean_headings(doc)
+
+    # After demotion, so a heading that is no longer a SectionHeaderItem
+    # does not participate in the level sequence.
+    #
+    # Reported either way. A setting that silently does nothing when unset is
+    # how three consecutive runs were spent testing a pass that never ran —
+    # the output looked identical to baseline because it WAS baseline, and
+    # nothing in the console said so.
+    if RENUMBER_HEADINGS:
+        renumber_from_text(doc)
+    else:
+        print("  numbering-based levels: OFF (RENUMBER_HEADINGS unset) — "
+              "heading levels are whatever docling assigned", flush=True)
 
     chunker = _make_chunker()
     chunks = list(chunker.chunk(dl_doc=doc))

@@ -432,3 +432,124 @@ def clean_headings(doc, verbose: bool = True) -> list[tuple[str, str]]:
                   "writing to doc.texts and not to a copy.", flush=True)
 
     return demoted
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Levels from the document's own numbering
+# ════════════════════════════════════════════════════════════════════════════
+
+# "8", "8.5", "4.3.1.2.1" — the depth is the number of dotted components.
+# Requires real text after the number so a bare figure reference or a page
+# number is not read as a section.
+DOTTED_SECTION = re.compile(r"^(\d+(?:\.\d+)*)[.)]?\s+\S")
+
+# Below this share of numbered headings, the document is not numbered
+# consistently enough for numbering to be a reliable depth signal, and this
+# pass leaves it alone rather than guessing. Measured: the NSCLC protocol runs
+# about 0.55, a document with no scheme runs near zero.
+MIN_NUMBERED_SHARE = 0.35
+
+
+def _numbered_level(text: str) -> int | None:
+    """Depth implied by a heading's own numbering, or None if unnumbered."""
+    match = DOTTED_SECTION.match(text.strip())
+    return match.group(1).count(".") + 1 if match else None
+
+
+def renumber_from_text(doc, verbose: bool = True) -> int:
+    """Recompute SectionHeaderItem.level from each heading's own numbering.
+
+        "8 Appendices"                 1 component   -> level 1
+        "8.5 RECIST 1.1 Guidelines"    2             -> level 2
+        "4.3.1.2.1 Immune Monitoring"  5             -> level 5
+        "I. Disease Parameters"        unnumbered    -> enclosing level + 1
+        "Tumor Microenvironment"       unnumbered    -> enclosing level + 1
+
+    WHY THIS EXISTS WHEN DOCLING ALREADY ASSIGNS LEVELS
+
+    HeadingHierarchyOptions infers depth from bookmarks, then numbering
+    markers, then visual style, and compresses the result relative to the
+    signals present in each scope. That compression is what makes it robust on
+    documents with no numbering at all — and what makes it unreliable on a
+    document whose numbering is already unambiguous.
+
+    Measured on a 112-page clinical protocol, with Docling's own assignment:
+
+        d2  1 Background              top-level sections landing at
+        d1  2 Study Rationale         inconsistent depths
+        d2  3 Experimental Plan
+        d1  4 Study Objectives
+        d3  4.1 Safety and Tolerability      4.1 three deep
+        d4  4.2 Clinical Efficacy            4.2 deeper than 4.1
+        d3  4.2.2 Subject Evaluation         4.2.2 SHALLOWER than its parent
+        d1  I. Disease Parameters            same level as 8 Appendices,
+                                              so it REPLACED it
+
+    Every one of those is unambiguous in the text itself. `4.3.1.2.1` states
+    its own depth; no inference is needed or wanted.
+
+    Seven Docling configurations were tested against the last of those —
+    scheme order, bookmark threshold, style off, bookmarks off, max_level, a
+    different PDF backend — and none improved on the default. The signal that
+    fixes it was in the heading text the whole time.
+
+    UNNUMBERED HEADINGS NEST, THEY DO NOT REPLACE
+
+    An unnumbered heading gets one level deeper than the last numbered
+    heading seen. That is the fix for the RECIST appendix: `I. Disease
+    Parameters` follows `8.5 RECIST 1.1 and irRECIST Guidelines` (level 2), so
+    it becomes level 3 and nests under it rather than displacing `8
+    Appendices`. Same rule handles `Tumor Microenvironment` and `NOTE 2:`.
+
+    WHEN THIS PASS DOES NOTHING
+
+    Below MIN_NUMBERED_SHARE numbered headings, the document has no numbering
+    convention to read and the pass returns without touching anything —
+    Docling's own inference is better than a rule with no evidence. An
+    unnumbered corpus is left entirely to HeadingHierarchyOptions.
+
+    Runs AFTER clean_headings, deliberately: a demoted heading is no longer a
+    SectionHeaderItem and must not participate in the level sequence.
+
+    Returns:
+        The number of headings whose level changed.
+    """
+    from docling_core.types.doc.document import SectionHeaderItem
+
+    headings = [item for item, _ in doc.iterate_items(with_groups=True)
+                if isinstance(item, SectionHeaderItem)]
+    if not headings:
+        return 0
+
+    levels = [_numbered_level(getattr(h, "text", "") or "") for h in headings]
+    numbered = sum(1 for level in levels if level is not None)
+    share = numbered / len(headings)
+
+    if share < MIN_NUMBERED_SHARE:
+        if verbose:
+            print(f"  numbering-based levels: SKIPPED — only {numbered} of "
+                  f"{len(headings)} headings are numbered ({share:.0%}, below "
+                  f"{MIN_NUMBERED_SHARE:.0%}). Docling's own inference is kept.",
+                  flush=True)
+        return 0
+
+    changed = 0
+    last_numbered = 0
+    for item, level in zip(headings, levels):
+        if level is None:
+            # Nest under whatever numbered section is open. Before the first
+            # numbered heading there is nothing to nest under, so level 1.
+            new_level = last_numbered + 1 if last_numbered else 1
+        else:
+            new_level = level
+            last_numbered = level
+
+        if getattr(item, "level", None) != new_level:
+            item.level = new_level
+            changed += 1
+
+    if verbose:
+        print(f"  numbering-based levels: {changed} of {len(headings)} heading(s) "
+              f"re-levelled from their own numbering ({numbered} numbered, "
+              f"{share:.0%})", flush=True)
+    return changed
