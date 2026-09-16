@@ -1,0 +1,8 @@
+docling>=2.55
+docling-core[chunking]>=2.50
+pinecone>=6.0
+openai>=1.60
+tiktoken>=0.8
+numpy>=1.26
+boto3>=1.35
+pypdf>=5.0

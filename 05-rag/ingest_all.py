@@ -54,6 +54,18 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
+# MUST run before importing rag. config.py reads every setting with
+# os.getenv(...) at MODULE level, the moment it is imported — not lazily
+# inside a function. Loading .env after that import has already happened
+# leaves every setting frozen at whatever was in the shell environment,
+# which for a fresh terminal is nothing.
+#
+# The notebooks load it in their first cell and so have always worked. This
+# entry point did not, so a batch run silently used defaults: no outline
+# headings, no renumbering, no minimum chunk floor, whatever .env said.
+from dotenv import load_dotenv
+load_dotenv()
+
 from rag import chunking, config, docling_io
 from rag import index as index_module
 from rag import inspect as inspection
