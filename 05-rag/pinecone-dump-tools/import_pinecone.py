@@ -50,6 +50,8 @@ import argparse
 import gzip
 import json
 import os
+
+from dotenv import load_dotenv
 import sys
 import time
 
@@ -119,6 +121,14 @@ def ensure_index(pc: Pinecone, index_name: str, dimension: int, metric: str,
 
 
 def main() -> None:
+    # Loaded first, before anything else — same convention as this
+    # project's own notebooks (see 01_build_graph.ipynb's setup cell).
+    # A .env file in the current directory is picked up automatically;
+    # if one doesn't exist, this is a harmless no-op and env vars already
+    # set in the shell (the NEO4J_URI=... prefix style) still work exactly
+    # as before.
+    load_dotenv()
+
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--file", required=True,
                     help="dump file from export_pinecone.py (.json or .json.gz)")
