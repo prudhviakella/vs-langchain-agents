@@ -46,7 +46,6 @@ EVERY NODE GETS A .key
 
 import json
 import time
-from pathlib import Path
 
 from . import config
 from .schema import normalise
@@ -256,162 +255,96 @@ def create_constraints(session) -> None:
             print(f"  DDL skipped: {str(exc)[:80]}", flush=True)
 
 
-def load_trial(session, record: dict) -> None:
-    """Write one parsed trial and everything it connects to.
+# Rows per UNWIND call — same value and same reasoning as structure.py and
+# the student-facing dump/load tools: small enough that one query's
+# parameter payload is never the bottleneck, large enough that this stays
+# a handful of round trips rather than hundreds.
+BATCH_SIZE = 500
 
-    Every node carries `source: "registry"`, which is what separates these facts
-    from the claims layer 3 extracts. A query can then ask for one, the other, or
-    both — and extraction accuracy can be measured against these.
 
-    Every node also carries `key`, a normalised form of its display name — the
-    same convention layer 3 uses — which is what makes it reachable from
-    store.find_chunks()/neighbours(). The MERGE identity (nctId, name, facility,
-    (measure, nctId)) is unchanged: `key` is for search, not uniqueness.
-    """
-    trial = record["trial"]
-    nct_id = trial["nctId"]
-    if not nct_id:
-        return
-
-    session.run("""
-        MERGE (t:Trial {nctId: $nctId})
-        SET t += $props, t.key = $key, t.source = 'registry'
-    """, nctId=nct_id, key=normalise(nct_id),
-         props={k: v for k, v in trial.items() if k != "nctId"})
-
-    # Coarse grouping from the first listed condition, for top-level browsing.
-    # Granular targeting is the Disease nodes below.
-    category = record["conditions"][0] if record["conditions"] else "Unknown"
-    session.run("""
-        MERGE (c:TrialCategory {name: $category})
-        SET c.key = $key, c.source = 'registry'
-        WITH c MATCH (t:Trial {nctId: $nctId})
-        MERGE (t)-[:BELONGS_TO]->(c)
-    """, category=category, key=normalise(category), nctId=nct_id)
-
-    for condition in record["conditions"]:
-        if condition and condition.strip():
-            name = condition.strip()
-            session.run("""
-                MERGE (d:Disease {name: $name})
-                SET d.key = $key, d.source = 'registry'
-                WITH d MATCH (t:Trial {nctId: $nctId})
-                MERGE (t)-[:TARGETS]->(d)
-            """, name=name, key=normalise(name), nctId=nct_id)
-
-    for intervention in record["interventions"]:
-        name = (intervention.get("name") or "").strip()
-        if name:
-            session.run("""
-                MERGE (d:Drug {name: $name})
-                SET d.type = $type, d.otherNames = $otherNames,
-                    d.key = $key, d.source = 'registry'
-                WITH d MATCH (t:Trial {nctId: $nctId})
-                MERGE (t)-[:TESTS]->(d)
-            """, name=name, type=intervention.get("type"),
-                 otherNames=intervention.get("otherNames", []),
-                 key=normalise(name), nctId=nct_id)
-
-    if record["lead_sponsor"]:
-        name = record["lead_sponsor"].strip()
-        session.run("""
-            MERGE (s:Sponsor {name: $name})
-            SET s.key = $key, s.source = 'registry'
-            WITH s MATCH (t:Trial {nctId: $nctId})
-            MERGE (t)-[:SPONSORED_BY]->(s)
-        """, name=name, key=normalise(name), nctId=nct_id)
-
-    # Not every collaborator is a contract research organisation, but in registered
-    # trials most are, and the separate label makes the operational-versus-financial
-    # distinction queryable without a free-text search.
-    for name in record["collaborators"]:
-        if name and name.strip():
-            clean = name.strip()
-            session.run("""
-                MERGE (c:CRO {name: $name})
-                SET c.key = $key, c.source = 'registry'
-                WITH c MATCH (t:Trial {nctId: $nctId})
-                MERGE (t)-[:MANAGED_BY]->(c)
-            """, name=clean, key=normalise(clean), nctId=nct_id)
-
-    for location in record["locations"]:
-        country = (location.get("country") or "").strip()
-        facility = (location.get("facility") or "").strip()
-        if not country:
-            continue
-        session.run("""
-            MERGE (c:Country {name: $country})
-            SET c.key = $key, c.source = 'registry'
-            WITH c MATCH (t:Trial {nctId: $nctId})
-            MERGE (t)-[:CONDUCTED_IN]->(c)
-        """, country=country, key=normalise(country), nctId=nct_id)
-        if facility:
-            session.run("""
-                MERGE (s:Site {facility: $facility})
-                SET s.city = $city, s.zip = $zip, s.lat = $lat, s.lon = $lon,
-                    s.key = $key, s.source = 'registry'
-                WITH s
-                MATCH (t:Trial {nctId: $nctId})
-                MATCH (c:Country {name: $country})
-                MERGE (t)-[:LOCATED_AT]->(s)
-                MERGE (s)-[:IN_COUNTRY]->(c)
-            """, facility=facility, city=location.get("city"), zip=location.get("zip"),
-                 lat=location.get("lat"), lon=location.get("lon"),
-                 key=normalise(facility), nctId=nct_id, country=country)
-
-    # Outcomes are MERGEd on (measure, trial) rather than measure alone: "Overall
-    # Survival" means something different in each trial, so a shared node would
-    # collapse unrelated endpoints into one. `key` is normalise(measure) alone —
-    # search does not need the same per-trial scoping the MERGE identity does.
-    for outcome in record["primary_outcomes"] + record["secondary_outcomes"]:
-        measure = (outcome.get("measure") or "").strip()
-        if measure:
-            session.run("""
-                MATCH (t:Trial {nctId: $nctId})
-                MERGE (o:Outcome {measure: $measure, nctId: $nctId})
-                SET o.description = $description, o.timeFrame = $timeFrame,
-                    o.type = $type, o.key = $key, o.source = 'registry'
-                MERGE (t)-[:MEASURES]->(o)
-            """, measure=measure, nctId=nct_id, key=normalise(measure),
-                 description=outcome.get("description", ""),
-                 timeFrame=outcome.get("timeFrame", ""), type=outcome.get("type"))
-
-    # PatientPopulation deliberately gets no `key`. It has no display name a
-    # question would name — it is reached from its Trial via ENROLLS, not
-    # searched for directly — and giving it one risks a collision with Trial's
-    # own key (both would normalise from the same nctId).
-    population = record["patient_population"]
-    if any(population.values()):
-        session.run("""
-            MATCH (t:Trial {nctId: $nctId})
-            MERGE (p:PatientPopulation {nctId: $nctId})
-            SET p += $props, p.source = 'registry'
-            MERGE (t)-[:ENROLLS]->(p)
-        """, nctId=nct_id, props={k: v for k, v in population.items() if v})
-
-    # The controlled vocabulary. This is what connects trials that describe the same
-    # condition differently, without any fuzzy matching.
-    for term in record["mesh_terms"]:
-        if term and term.strip():
-            clean = term.strip()
-            session.run("""
-                MERGE (m:MeSHTerm {term: $term})
-                SET m.key = $key, m.source = 'registry'
-                WITH m MATCH (t:Trial {nctId: $nctId})
-                MERGE (t)-[:INDEXED_AS]->(m)
-            """, term=clean, key=normalise(clean), nctId=nct_id)
+def _run_batched(session, query: str, rows: list[dict]) -> None:
+    """UNWIND $batch through `query` in chunks of BATCH_SIZE. Used
+    throughout below in place of one session.run() call per row."""
+    for i in range(0, len(rows), BATCH_SIZE):
+        session.run(query, batch=rows[i:i + BATCH_SIZE])
 
 
 def load_trials(session, nct_ids: list[str], verbose: bool = True) -> dict:
-    """Fetch, parse and load every trial. Missing ones are reported, not fatal."""
+    """Fetch, parse and load every trial. Missing ones are reported, not fatal.
+
+    WHY THIS BATCHES ACROSS ALL TRIALS, NOT PER TRIAL
+
+        load_trials(session, nct_ids)
+            |
+            |-- fetch_trial() + parse_trial(), one call per nct_id  (STEP 1)
+            |   (network calls to ClinicalTrials.gov's own API —
+            |    unavoidably one per trial, and a different bottleneck
+            |    from the Neo4j writes below entirely)
+            |
+            |-- STEP 2   Trial nodes           one UNWIND, every trial
+            |-- STEP 3   TrialCategory + edge  one UNWIND, every trial
+            |-- STEP 4   Disease + edge        one UNWIND, every condition,
+            |                                  every trial
+            |-- STEP 5   Drug + edge           one UNWIND, every intervention
+            |-- STEP 6   Sponsor + edge        one UNWIND, every trial with one
+            |-- STEP 7   CRO + edge            one UNWIND, every collaborator
+            |-- STEP 8   Country + edge        one UNWIND, every location
+            |-- STEP 9   Site + edges          one UNWIND, every location
+            |                                  with a facility
+            |-- STEP 10  Outcome + edge        one UNWIND, every outcome
+            |-- STEP 11  PatientPopulation     one UNWIND, every trial with data
+            |-- STEP 12  MeSHTerm + edge       one UNWIND, every term
+            |
+            v
+        {"loaded": [...], "missing": [...]}
+
+        The previous version called load_trial() once per trial, and inside
+        it, session.run() once per condition, per intervention, per
+        collaborator, per location (TWICE — once for the country, once for
+        the site), per outcome, per MeSH term. Measured directly against
+        this exact 20-trial corpus: one trial alone had 172 locations, so
+        just that trial's location loop was ~344 individual round trips
+        before counting anything else. Summed across all 20 trials, that
+        is easily 2,500-3,000+ round trips in one long-running Neo4j
+        session — long enough that Aura's own connection actually died
+        mid-run (SessionExpired: Failed to read from defunct connection),
+        not merely ran slowly the way structure.py's 21-minute case did.
+
+        The fix is the same one applied there: collect every row this
+        function would have written one at a time, across ALL 20 trials
+        at once, and send each node/relationship type through Cypher's
+        UNWIND in batches of BATCH_SIZE instead of one row per round trip.
+        Trial nodes are written first and everything else MATCHes them,
+        preserving the same dependency the original per-trial version had
+        (a trial's other facts always assumed load_trial() had already
+        MERGEd the Trial node earlier in that same call).
+
+    WHAT THIS DOES NOT DO
+
+        - It does not change what gets written — same nodes, same
+          relationships, same properties, same `key`/`source` conventions,
+          same return shape. This is a performance rewrite only.
+        - It does not deduplicate repeated countries within a trial before
+          batching. The original called Country MERGE once per location
+          even when several locations shared a country; batching preserves
+          that same row-per-location shape. MERGE is idempotent regardless,
+          so the result is identical either way — this only affects how
+          many (harmless, no-op) rows are in the batch, not correctness.
+        - It does not change fetch_trial()'s own per-trial network calls to
+          ClinicalTrials.gov. Those are a different bottleneck (an external
+          API, not this database) and were never the source of the timeout.
+    """
+    # STEP 1 — fetch and parse every trial first. Network calls to a
+    # different service entirely; kept exactly as before.
     loaded, missing = [], []
+    records = []
     for nct_id in nct_ids:
         raw = fetch_trial(nct_id)
         if raw is None:
             missing.append(nct_id)
             continue
         record = parse_trial(raw)
-        load_trial(session, record)
+        records.append(record)
         loaded.append(nct_id)
         if verbose:
             trial = record["trial"]
@@ -421,4 +354,188 @@ def load_trials(session, nct_ids: list[str], verbose: bool = True) -> dict:
 
     if verbose and missing:
         print(f"\n  not found: {', '.join(missing)}", flush=True)
+
+    _load_records(session, records)
     return {"loaded": loaded, "missing": missing}
+
+
+def _load_records(session, records: list[dict]) -> None:
+    """Batch-write every node and relationship type, across every record
+    in one call. See load_trials()'s own docstring for why.
+    """
+    # STEP 2 — Trial nodes. Written first: every later batch MATCHes a
+    # Trial by nctId, exactly as the original per-trial code assumed the
+    # Trial already existed from its own first statement.
+    trial_rows = [{"nctId": r["trial"]["nctId"], "key": normalise(r["trial"]["nctId"]),
+                  "props": {k: v for k, v in r["trial"].items() if k != "nctId"}}
+                 for r in records if r["trial"]["nctId"]]
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MERGE (t:Trial {nctId: row.nctId})
+        SET t += row.props, t.key = row.key, t.source = 'registry'
+    """, trial_rows)
+
+    valid_nct_ids = {row["nctId"] for row in trial_rows}
+    records = [r for r in records if r["trial"]["nctId"] in valid_nct_ids]
+
+    # STEP 3 — TrialCategory, one per trial from its first listed condition.
+    category_rows = [{"nctId": r["trial"]["nctId"],
+                      "category": r["conditions"][0] if r["conditions"] else "Unknown"}
+                     for r in records]
+    for row in category_rows:
+        row["key"] = normalise(row["category"])
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MERGE (c:TrialCategory {name: row.category})
+        SET c.key = row.key, c.source = 'registry'
+        WITH c, row MATCH (t:Trial {nctId: row.nctId})
+        MERGE (t)-[:BELONGS_TO]->(c)
+    """, category_rows)
+
+    # STEP 4 — Disease, one row per (trial, condition).
+    disease_rows = [{"nctId": r["trial"]["nctId"], "name": c.strip(),
+                     "key": normalise(c.strip())}
+                    for r in records for c in r["conditions"] if c and c.strip()]
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MERGE (d:Disease {name: row.name})
+        SET d.key = row.key, d.source = 'registry'
+        WITH d, row MATCH (t:Trial {nctId: row.nctId})
+        MERGE (t)-[:TARGETS]->(d)
+    """, disease_rows)
+
+    # STEP 5 — Drug, one row per (trial, intervention).
+    drug_rows = []
+    for r in records:
+        for interv in r["interventions"]:
+            name = (interv.get("name") or "").strip()
+            if name:
+                drug_rows.append({
+                    "nctId": r["trial"]["nctId"], "name": name,
+                    "type": interv.get("type"),
+                    "otherNames": interv.get("otherNames", []),
+                    "key": normalise(name),
+                })
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MERGE (d:Drug {name: row.name})
+        SET d.type = row.type, d.otherNames = row.otherNames,
+            d.key = row.key, d.source = 'registry'
+        WITH d, row MATCH (t:Trial {nctId: row.nctId})
+        MERGE (t)-[:TESTS]->(d)
+    """, drug_rows)
+
+    # STEP 6 — Sponsor, one row per trial that has a lead sponsor.
+    sponsor_rows = [{"nctId": r["trial"]["nctId"], "name": r["lead_sponsor"].strip(),
+                     "key": normalise(r["lead_sponsor"].strip())}
+                    for r in records if r["lead_sponsor"]]
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MERGE (s:Sponsor {name: row.name})
+        SET s.key = row.key, s.source = 'registry'
+        WITH s, row MATCH (t:Trial {nctId: row.nctId})
+        MERGE (t)-[:SPONSORED_BY]->(s)
+    """, sponsor_rows)
+
+    # STEP 7 — CRO, one row per (trial, collaborator).
+    cro_rows = [{"nctId": r["trial"]["nctId"], "name": c.strip(), "key": normalise(c.strip())}
+               for r in records for c in r["collaborators"] if c and c.strip()]
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MERGE (c:CRO {name: row.name})
+        SET c.key = row.key, c.source = 'registry'
+        WITH c, row MATCH (t:Trial {nctId: row.nctId})
+        MERGE (t)-[:MANAGED_BY]->(c)
+    """, cro_rows)
+
+    # STEP 8 — Country, one row per location (not deduplicated within a
+    # trial — see the module-level docstring for why that is fine).
+    country_rows = [{"nctId": r["trial"]["nctId"],
+                     "country": (loc.get("country") or "").strip(),
+                     "key": normalise((loc.get("country") or "").strip())}
+                    for r in records for loc in r["locations"]
+                    if (loc.get("country") or "").strip()]
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MERGE (c:Country {name: row.country})
+        SET c.key = row.key, c.source = 'registry'
+        WITH c, row MATCH (t:Trial {nctId: row.nctId})
+        MERGE (t)-[:CONDUCTED_IN]->(c)
+    """, country_rows)
+
+    # STEP 9 — Site, the batch that mattered most: one row per location
+    # that has a facility name. This is the loop that was 172 rows deep
+    # for a single trial in this corpus.
+    site_rows = []
+    for r in records:
+        for loc in r["locations"]:
+            country = (loc.get("country") or "").strip()
+            facility = (loc.get("facility") or "").strip()
+            if country and facility:
+                site_rows.append({
+                    "nctId": r["trial"]["nctId"], "facility": facility,
+                    "country": country, "city": loc.get("city"),
+                    "zip": loc.get("zip"), "lat": loc.get("lat"),
+                    "lon": loc.get("lon"), "key": normalise(facility),
+                })
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MERGE (s:Site {facility: row.facility})
+        SET s.city = row.city, s.zip = row.zip, s.lat = row.lat, s.lon = row.lon,
+            s.key = row.key, s.source = 'registry'
+        WITH s, row
+        MATCH (t:Trial {nctId: row.nctId})
+        MATCH (c:Country {name: row.country})
+        MERGE (t)-[:LOCATED_AT]->(s)
+        MERGE (s)-[:IN_COUNTRY]->(c)
+    """, site_rows)
+
+    # STEP 10 — Outcome, primary and secondary combined, one row each.
+    # MERGEd on (measure, nctId) exactly as before: the same measure name
+    # means something different per trial, so the trial-scoped key stays.
+    outcome_rows = []
+    for r in records:
+        for outcome in r["primary_outcomes"] + r["secondary_outcomes"]:
+            measure = (outcome.get("measure") or "").strip()
+            if measure:
+                outcome_rows.append({
+                    "nctId": r["trial"]["nctId"], "measure": measure,
+                    "description": outcome.get("description", ""),
+                    "timeFrame": outcome.get("timeFrame", ""),
+                    "type": outcome.get("type"), "key": normalise(measure),
+                })
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MATCH (t:Trial {nctId: row.nctId})
+        MERGE (o:Outcome {measure: row.measure, nctId: row.nctId})
+        SET o.description = row.description, o.timeFrame = row.timeFrame,
+            o.type = row.type, o.key = row.key, o.source = 'registry'
+        MERGE (t)-[:MEASURES]->(o)
+    """, outcome_rows)
+
+    # STEP 11 — PatientPopulation. Deliberately no `.key` — see the
+    # original module's own note: it has no display name a question would
+    # name, and giving it one risks colliding with Trial's own key (both
+    # would normalise from the same nctId).
+    population_rows = [{"nctId": r["trial"]["nctId"],
+                        "props": {k: v for k, v in r["patient_population"].items() if v}}
+                       for r in records if any(r["patient_population"].values())]
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MATCH (t:Trial {nctId: row.nctId})
+        MERGE (p:PatientPopulation {nctId: row.nctId})
+        SET p += row.props, p.source = 'registry'
+        MERGE (t)-[:ENROLLS]->(p)
+    """, population_rows)
+
+    # STEP 12 — MeSHTerm, the controlled vocabulary connecting trials that
+    # describe the same condition differently, without fuzzy matching.
+    mesh_rows = [{"nctId": r["trial"]["nctId"], "term": t.strip(), "key": normalise(t.strip())}
+                for r in records for t in r["mesh_terms"] if t and t.strip()]
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MERGE (m:MeSHTerm {term: row.term})
+        SET m.key = row.key, m.source = 'registry'
+        WITH m, row MATCH (t:Trial {nctId: row.nctId})
+        MERGE (t)-[:INDEXED_AS]->(m)
+    """, mesh_rows)

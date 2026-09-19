@@ -1,0 +1,2 @@
+pinecone>=6.0
+neo4j>=5.20

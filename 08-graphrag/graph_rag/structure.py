@@ -37,6 +37,48 @@ SECTIONS GET A .key TOO
     down from its Document, never by naming it directly. Document itself is left
     without a `.key`: a document is reached via its Trial (the ABOUT edge) or by
     fetching its chunks directly, not by a user naming the document by title.
+
+WHY load_structure() WRITES IN BATCHES, NOT ONE CALL PER CHUNK
+
+    load_structure(session, records)
+        |
+        |-- STEP 1  documents          one UNWIND, all documents in one round trip
+        |-- STEP 2  ABOUT edges        one UNWIND, only for documents with a nct_id
+        |-- STEP 3  sections           dedup first, then one UNWIND per batch
+        |-- STEP 4  chunks             one UNWIND per batch of BATCH_SIZE chunks
+        |-- STEP 5  NEXT edges         one UNWIND per batch
+        |
+        v
+    counts dict, same shape as before
+
+    The previous version called session.run() once per chunk — for a corpus
+    of 5764 chunks, that is roughly 11,800 individual round trips once
+    Chunk-node writes, HAS_CHUNK edges, and NEXT edges are all counted
+    separately. Against a remote, cloud-hosted Aura instance rather than a
+    local database, each round trip pays real network latency regardless
+    of how little work Neo4j actually does server-side for a MERGE that
+    mostly matches existing nodes. Measured directly: that produced a
+    21-minute run for a re-run of the same 5764 chunks, work that involves
+    almost no actual writing the second time. Batching with UNWIND sends
+    many rows in one round trip instead of one row per round trip — the
+    server-side work per row is unchanged, but the network overhead that
+    was actually dominating is paid once per batch instead of once per
+    chunk.
+
+WHAT THIS DOES NOT DO
+
+    - It does not change what gets written — same nodes, same
+      relationships, same properties, same counts dict shape as the
+      unbatched version. This is a performance rewrite, not a behavior
+      change.
+    - It does not batch across documents in a way that loses the
+      per-document ABOUT-link count. STEP 2 still reports linked_to_trial
+      accurately, just via one collected result instead of one counted
+      result per document.
+    - It does not retry a failed batch partially. A batch is one
+      transaction; if it fails, none of that batch's rows were written,
+      which is the same all-or-nothing behavior a single MERGE call always
+      had, just now covering many rows instead of one.
 """
 
 import hashlib
@@ -71,6 +113,12 @@ CONSTRAINTS = [
     "CREATE INDEX chunk_type    IF NOT EXISTS FOR (c:Chunk)   ON (c.contentType)",
     "CREATE INDEX section_key   IF NOT EXISTS FOR (s:Section) ON (s.key)",
 ]
+
+# Rows per UNWIND call. Same value used throughout the student-facing
+# dump/load tools, for the same reason: small enough that one query's
+# parameter payload is never the bottleneck, large enough that this is
+# genuinely a handful of round trips rather than hundreds.
+BATCH_SIZE = 500
 
 
 def create_constraints(session) -> None:
@@ -111,6 +159,15 @@ def section_key(doc_id: str, heading: str) -> str:
     return f"{doc_id}:{digest}"
 
 
+def _run_batched(session, query: str, rows: list[dict]) -> None:
+    """UNWIND $batch through `query` in chunks of BATCH_SIZE, discarding
+    any RETURN — used for writes where the write itself is all that
+    matters, not what comes back.
+    """
+    for i in range(0, len(rows), BATCH_SIZE):
+        session.run(query, batch=rows[i:i + BATCH_SIZE])
+
+
 def load_structure(session, chunks: list[dict], verbose: bool = True) -> dict:
     """Write documents, sections and chunks, and link documents to their trial.
 
@@ -126,80 +183,112 @@ def load_structure(session, chunks: list[dict], verbose: bool = True) -> dict:
     counts = {"documents": 0, "sections": 0, "chunks": 0, "linked_to_trial": 0,
              "next_edges": 0}
 
+    # Per-document facts, computed once up front — the NCT lookup is cheap
+    # (string search over the opening few chunks), and every batch below
+    # needs doc_id/source/nct_id together, so this is worked out once
+    # rather than re-derived per batch.
+    doc_facts: dict[str, dict] = {}
     for doc_id, doc_chunks in by_document.items():
         source = doc_chunks[0].get("source", "")
-        # Look for the NCT number in the opening chunks, where a protocol states it.
         opening = " ".join(c.get("text", "") for c in doc_chunks[:3])
-        nct_id = find_nct_id(doc_id, source, opening)
+        doc_facts[doc_id] = {
+            "doc_id": doc_id, "source": source, "n_chunks": len(doc_chunks),
+            "nct_id": find_nct_id(doc_id, source, opening),
+        }
 
-        session.run("""
-            MERGE (d:Document {docId: $doc_id})
-            SET d.sourceFile = $source, d.nChunks = $n_chunks,
-                d.nctId = $nct_id, d.origin = 'structure'
-        """, doc_id=doc_id, source=source, n_chunks=len(doc_chunks), nct_id=nct_id)
-        counts["documents"] += 1
+    # STEP 1 — documents, one UNWIND for every document in this call.
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MERGE (d:Document {docId: row.doc_id})
+        SET d.sourceFile = row.source, d.nChunks = row.n_chunks,
+            d.nctId = row.nct_id, d.origin = 'structure'
+    """, list(doc_facts.values()))
+    counts["documents"] = len(doc_facts)
 
-        # The join. Only created when the registry already holds that trial, so a
-        # document naming an unregistered NCT number does not conjure a Trial node
-        # with no facts attached.
-        if nct_id:
-            result = session.run("""
-                MATCH (d:Document {docId: $doc_id})
-                MATCH (t:Trial {nctId: $nct_id})
-                MERGE (d)-[:ABOUT]->(t)
-                RETURN count(*) AS linked
-            """, doc_id=doc_id, nct_id=nct_id).single()
-            if result and result["linked"]:
-                counts["linked_to_trial"] += 1
+    # STEP 2 — ABOUT edges. Only documents with a found nct_id are sent at
+    # all — MATCHing a Trial that never had a Document row would just find
+    # nothing, so filtering here is a smaller UNWIND, not a correctness
+    # difference. Which doc_ids actually matched a real Trial node comes
+    # back as one collected list rather than a per-row count, since a
+    # MATCH that finds nothing drops that row from the result entirely —
+    # collecting survivors and taking the length is the correct way to
+    # count them, not summing a count(*) that would already have skipped
+    # the misses.
+    candidates = [row for row in doc_facts.values() if row["nct_id"]]
+    for i in range(0, len(candidates), BATCH_SIZE):
+        batch = candidates[i:i + BATCH_SIZE]
+        result = session.run("""
+            UNWIND $batch AS row
+            MATCH (d:Document {docId: row.doc_id})
+            MATCH (t:Trial {nctId: row.nct_id})
+            MERGE (d)-[:ABOUT]->(t)
+            RETURN collect(row.doc_id) AS linked
+        """, batch=batch).single()
+        counts["linked_to_trial"] += len(result["linked"]) if result else 0
 
-        seen_sections = set()
+    # STEP 3 — sections, deduplicated across the whole call first. The
+    # original per-chunk loop tracked seen_sections per document as it
+    # went; deduplicating up front here is the same logic, just computed
+    # before batching rather than interleaved with per-chunk writes.
+    sections: dict[str, dict] = {}
+    for doc_id, doc_chunks in by_document.items():
         for chunk in doc_chunks:
             headings = chunk.get("headings") or []
             heading = headings[0] if headings else "(no heading)"
             key = section_key(doc_id, heading)
+            if key not in sections:
+                sections[key] = {"key": key, "heading": heading, "doc_id": doc_id,
+                                 "search_key": normalise(heading)}
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MERGE (s:Section {sectionKey: row.key})
+        SET s.heading = row.heading, s.docId = row.doc_id,
+            s.key = row.search_key, s.origin = 'structure'
+        WITH s, row MATCH (d:Document {docId: row.doc_id})
+        MERGE (d)-[:HAS_SECTION]->(s)
+    """, list(sections.values()))
+    counts["sections"] = len(sections)
 
-            if key not in seen_sections:
-                session.run("""
-                    MERGE (s:Section {sectionKey: $key})
-                    SET s.heading = $heading, s.docId = $doc_id,
-                        s.key = $search_key, s.origin = 'structure'
-                    WITH s MATCH (d:Document {docId: $doc_id})
-                    MERGE (d)-[:HAS_SECTION]->(s)
-                """, key=key, heading=heading, doc_id=doc_id,
-                     search_key=normalise(heading))
-                seen_sections.add(key)
-                counts["sections"] += 1
+    # STEP 4 — chunks. Every chunk carries the section key it belongs to,
+    # computed the same way as STEP 3 so the two agree on the identical
+    # key for the identical (doc_id, heading) pair.
+    chunk_rows = []
+    for doc_id, doc_chunks in by_document.items():
+        for chunk in doc_chunks:
+            headings = chunk.get("headings") or []
+            heading = headings[0] if headings else "(no heading)"
+            chunk_rows.append({
+                "chunk_id": chunk["chunk_id"], "doc_id": doc_id,
+                "page": chunk.get("page"), "position": chunk.get("position"),
+                "content_type": chunk.get("content_type"),
+                "n_tokens": chunk.get("n_tokens"),
+                "key": section_key(doc_id, heading),
+            })
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MERGE (c:Chunk {chunkId: row.chunk_id})
+        SET c.docId = row.doc_id, c.page = row.page, c.position = row.position,
+            c.content_type = row.content_type, c.n_tokens = row.n_tokens,
+            c.origin = 'structure'
+        WITH c, row MATCH (s:Section {sectionKey: row.key})
+        MERGE (s)-[:HAS_CHUNK]->(c)
+    """, chunk_rows)
+    counts["chunks"] = len(chunk_rows)
 
-            # Chunks carry an id, a page and a type — and no text. The text lives in
-            # the vector store; two copies would need keeping in sync, and a
-            # traversal only needs to know which chunks to fetch.
-            session.run("""
-                MERGE (c:Chunk {chunkId: $chunk_id})
-                SET c.docId = $doc_id, c.page = $page, c.position = $position,
-                    c.content_type = $content_type, c.n_tokens = $n_tokens,
-                    c.origin = 'structure'
-                WITH c MATCH (s:Section {sectionKey: $key})
-                MERGE (s)-[:HAS_CHUNK]->(c)
-            """, chunk_id=chunk["chunk_id"], doc_id=doc_id,
-                 page=chunk.get("page"), position=chunk.get("position"),
-                 content_type=chunk.get("content_type"),
-                 n_tokens=chunk.get("n_tokens"), key=key)
-            counts["chunks"] += 1
-
-    # Reading-order edges, taken directly from each chunk's own prev_id/next_id —
-    # not re-derived by sorting. See the module docstring for why re-sorting on
-    # position alone can silently misorder a table's fragments against its summary,
-    # which this avoids by trusting the one place that ordering was already
-    # computed correctly.
-    for chunk in chunks:
-        next_id = chunk.get("next_id")
-        if not next_id:
-            continue
-        session.run("""
-            MATCH (a:Chunk {chunkId: $a}) MATCH (b:Chunk {chunkId: $b})
-            MERGE (a)-[:NEXT]->(b)
-        """, a=chunk["chunk_id"], b=next_id)
-        counts["next_edges"] += 1
+    # STEP 5 — reading-order edges, taken directly from each chunk's own
+    # prev_id/next_id — not re-derived by sorting. See the module
+    # docstring for why re-sorting on position alone can silently
+    # misorder a table's fragments against its summary, which this avoids
+    # by trusting the one place that ordering was already computed
+    # correctly.
+    next_rows = [{"a": chunk["chunk_id"], "b": chunk["next_id"]}
+                for chunk in chunks if chunk.get("next_id")]
+    _run_batched(session, """
+        UNWIND $batch AS row
+        MATCH (a:Chunk {chunkId: row.a}) MATCH (b:Chunk {chunkId: row.b})
+        MERGE (a)-[:NEXT]->(b)
+    """, next_rows)
+    counts["next_edges"] = len(next_rows)
 
     if verbose:
         for key, value in counts.items():
