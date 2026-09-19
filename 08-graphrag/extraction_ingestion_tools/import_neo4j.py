@@ -56,6 +56,8 @@ import gzip
 import json
 import os
 
+from dotenv import load_dotenv
+
 BATCH_SIZE = 500
 
 
@@ -200,6 +202,14 @@ def cleanup(session) -> None:
 
 
 def main() -> None:
+    # Loaded first, before anything else — same convention as this
+    # project's own notebooks (see 01_build_graph.ipynb's setup cell).
+    # A .env file in the current directory is picked up automatically;
+    # if one doesn't exist, this is a harmless no-op and env vars already
+    # set in the shell (the NEO4J_URI=... prefix style) still work exactly
+    # as before.
+    load_dotenv()
+
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--file", required=True,
                     help="dump file from export_neo4j.py (.json or .json.gz)")
