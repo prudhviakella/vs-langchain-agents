@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "supervisor-a2a-agent"
+version = "0.1.0"
+description = "Supervisor agent — routes between trial_graph and trial_search using LangChain with A2A protocol on Bedrock AgentCore"
+requires-python = ">=3.12"
+dependencies = [
+    "bedrock-agentcore[a2a]>=1.0.0",
+    # a2a-sdk pinned to what bedrock-agentcore[a2a] requires. See
+    # trial_graph's own pyproject.toml for the full reasoning — the 1.x
+    # line switches to a protobuf message API and breaks main.py's
+    # pydantic-based Message/Part/TextPart construction.
+    "a2a-sdk>=0.3,<1.0",
+    "langchain>=1.3.13",
+    "langgraph>=1.2.9",
+    "langchain-aws>=1.0.0",
+    "openinference-instrumentation-langchain",
+    "pydantic>=2.0",
+    # Deliberately no mcp / mcp-proxy-for-aws / langchain-mcp-adapters
+    # here — unlike trial_graph and trial_search, the Supervisor never
+    # speaks MCP. Its one tool calls trial_graph/trial_search directly
+    # via boto3's invoke_agent_runtime (see agent_client.py), which is
+    # a genuinely different integration path, not an oversight.
+    #
+    # Floors below confirmed directly from AWS's own troubleshooting
+    # docs: older boto3/botocore raise "Unknown service:
+    # 'bedrock-agent-core-runtime'" because the bedrock-agentcore
+    # service definitions themselves didn't exist in earlier releases.
+    "boto3>=1.39.8",
+    "botocore>=1.33.8",
+]

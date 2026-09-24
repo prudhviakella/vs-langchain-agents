@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trial-graph-a2a-agent"
+version = "0.1.0"
+description = "trial_graph agent (NL to Cypher over the clinical trial Neo4j graph) using LangChain with A2A protocol on Bedrock AgentCore"
+requires-python = ">=3.12"
+dependencies = [
+    "bedrock-agentcore[a2a]>=1.0.0",
+    # a2a-sdk pinned to what bedrock-agentcore[a2a] requires. Confirmed
+    # directly: the 1.x line switches to a protobuf message API and
+    # breaks main.py's pydantic-based Message/Part/TextPart construction
+    # — this was caught by actually installing 1.x and inspecting
+    # Message's real type, not assumed from a changelog.
+    "a2a-sdk>=0.3,<1.0",
+    # Version floors are not cosmetic — this agent depends on specific
+    # APIs confirmed to require these versions, same floors the
+    # reference ACT Xerebro agents document for the same reason:
+    #   - AgentMiddleware.wrap_tool_call / Command-returning middleware
+    #   - ToolCallRequest.override()
+    #   - ToolStrategy (langchain.agents.structured_output)
+    "langchain>=1.3.13",
+    "langgraph>=1.2.9",
+    "langchain-aws>=1.0.0",
+    "langchain-mcp-adapters>=0.1.0",
+    "mcp>=1.0.0",
+    "mcp-proxy-for-aws>=0.1.0",
+    "openinference-instrumentation-langchain",
+    "pydantic>=2.0",
+]

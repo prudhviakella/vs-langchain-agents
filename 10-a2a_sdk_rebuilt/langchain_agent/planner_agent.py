@@ -437,8 +437,10 @@ class PlannerAgentExecutor(AgentExecutor):
                             sent_any = True
 
                     elif kind == "message-finish" and sent_any:
+                        # Empty parts: this chunk only marks the end of
+                        # the artifact, it adds no more text.
                         await updater.add_artifact(
-                            parts=[new_text_part(text="", media_type="text/plain")],
+                            parts=[],
                             artifact_id=response_id,
                             name="response",
                             append=True,
@@ -521,7 +523,9 @@ class PlannerAgentExecutor(AgentExecutor):
 # ============================================================
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
 
+    load_dotenv()
     run_agent(
         CARD,
         PlannerAgentExecutor(),
