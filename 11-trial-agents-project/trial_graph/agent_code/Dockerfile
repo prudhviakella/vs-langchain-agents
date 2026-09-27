@@ -1,31 +1,40 @@
 # trial_graph — AgentCore Runtime container.
 #
-# Two requirements verified directly against AWS's own documentation and
-# the bedrock_agentcore SDK's source before writing this, not assumed:
-#   1. Platform MUST be linux/arm64 — AgentCore Runtime does not run
-#      x86_64 images. Build with:
-#        docker buildx build --platform linux/arm64 -t <tag> --push .
-#   2. Port 9000 — the A2A protocol's contract port, hardcoded into
-#      bedrock_agentcore.runtime.a2a as A2A_CONTRACT_PORT. Binding
-#      elsewhere fails every deployed invocation with HTTP 424, since
-#      the Runtime only proxies to 9000 — confirmed from the SDK's own
-#      source, not from a generic AgentCore example (several public
-#      examples show port 8080, which is for a different, non-A2A
-#      agent contract).
+#   build   docker buildx build --platform linux/arm64 ...  (Runtime is arm64 only)
+#   run     opentelemetry-instrument python main.py         (port 9000, A2A)
 #
-# No EXPOSE for a /ping route to build ourselves — serve_a2a() in
-# main.py registers GET /ping automatically.
+# OBSERVABILITY: `opentelemetry-instrument` loads aws-opentelemetry-distro, which
+# configures the exporters. On AgentCore Runtime the OTEL environment is preset by
+# the runtime; spans reach CloudWatch (aws/spans, GenAI Observability) once
+# CloudWatch Transaction Search is enabled for the account. Running plain
+# `python main.py` — what an earlier version did — creates spans and exports none,
+# with no error anywhere.
 
 FROM --platform=linux/arm64 python:3.12-slim
 
 WORKDIR /app
 
+# OTEL_SERVICE_NAME names this agent in traces and in the GenAI Observability
+# dashboard. PYTHONUNBUFFERED: logs reach CloudWatch as they happen, not on flush.
+ENV PYTHONUNBUFFERED=1 \
+    OTEL_SERVICE_NAME=trial_graph
+
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir --break-system-packages .
+RUN pip install --no-cache-dir .
 
 COPY trial_graph ./trial_graph
 COPY main.py ./
 
+# Fail the BUILD if a top-level file shadows a stdlib module a dependency imports
+# (a stray secrets.py breaks `from secrets import token_hex` at runtime).
+RUN for m in secrets token types io json logging queue select signal socket; do \
+        if [ -f "/app/$m.py" ]; then echo "/app/$m.py shadows stdlib '$m'" >&2; exit 1; fi; \
+    done
+
+# Not root.
+RUN useradd -m -u 1000 bedrock_agentcore && chown -R bedrock_agentcore /app
+USER bedrock_agentcore
+
 EXPOSE 9000
 
-CMD ["python", "main.py"]
+CMD ["opentelemetry-instrument", "python", "main.py"]

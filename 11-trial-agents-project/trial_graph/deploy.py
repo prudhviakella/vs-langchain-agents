@@ -20,20 +20,23 @@ reads from AWS at start (see agent_code/trial_graph/config.py), so changing
 a limit, the prompt version or the model name needs no rebuild — only a new
 container, which the next cold start provides.
 
+Before STEP 1, CloudWatch Transaction Search is enabled if it is not already —
+without it, no agent's spans appear in CloudWatch (infra/observability.py).
+
 DEPLOY ORDER:  trial_graph -> trial_search -> supervisor
 
 WHAT THIS DOES NOT DO
 
-    It does not set real credentials, and it does not log in to ECR:
-      aws ecr get-login-password | docker login --username AWS \\
-          --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
+    It does not set real credentials. It does not grant permissions or install
+    Docker — infra/preflight.py checks both first and stops, naming what is
+    missing, before anything is created. It logs in to ECR by itself.
 """
 import json
 from pathlib import Path
 
 import boto3
 
-from infra import (config_store, gateway, guardrail, iam, lambda_deploy, prompts,
+from infra import (preflight, observability, config_store, gateway, guardrail, iam, lambda_deploy, prompts,
                    runtime_deploy, runtime_iam)
 
 AGENT = "trial_graph"
@@ -48,7 +51,11 @@ LIMITS = {"row_cap": 500, "graph_node_cap": 500, "max_repairs": 3}
 
 
 def main() -> None:
+    preflight.run(needs_gateway=True)
     prefix = config_store.prefix(AGENT)
+
+    print("=== observability: CloudWatch Transaction Search (once per account) ===")
+    observability.ensure_transaction_search()
 
     print("=== STEP 1: secrets ===")
     neo4j_arn = config_store.ensure_secret(

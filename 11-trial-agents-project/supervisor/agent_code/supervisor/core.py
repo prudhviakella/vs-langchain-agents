@@ -87,6 +87,7 @@ from langgraph.types import Command
 from . import agent_client
 from .config import settings
 from .guardrail import GuardrailBlocked, GuardrailMiddleware, check
+from .tracing import set_span_attrs, span
 from .schemas import (AgentCall, SupervisorDecision, SupervisorResponse,
                       collect_usage)
 
@@ -164,14 +165,18 @@ def call_agent(agent_name: str, question: str, rationale: str,
             content=f"REJECTED: {agent_name!r} is not a specialist. "
                     f"Valid names: {', '.join(sorted(specialists))}.")]})
 
-    try:
-        result = agent_client.call_specialist(
-            specialists[agent_name]["arn"], agent_name, question, CONVERSATION.get())
-        succeeded = True
-    except agent_client.AgentCallError as exc:
-        log.warning("call to %s failed: %s", agent_name, exc)
-        result = {"result_shape": "error", "result_note": str(exc)}
-        succeeded = False
+    # The span is current while the specialist is invoked, so the traceparent
+    # agent_client sends makes the specialist's spans children of THIS one.
+    with span("supervisor.call_agent", agent=agent_name) as sp:
+        try:
+            result = agent_client.call_specialist(
+                specialists[agent_name]["arn"], agent_name, question, CONVERSATION.get())
+            succeeded = True
+        except agent_client.AgentCallError as exc:
+            log.warning("call to %s failed: %s", agent_name, exc)
+            result = {"result_shape": "error", "result_note": str(exc)}
+            succeeded = False
+        set_span_attrs(sp, succeeded=succeeded, result_shape=result.get("result_shape"))
 
     record = AgentCall(agent_name=agent_name, question=question,
                        rationale=rationale, succeeded=succeeded,
@@ -316,8 +321,11 @@ class GraphState(TypedDict, total=False):
 async def _route(state: GraphState) -> dict:
     """PROBABILISTIC. Runs the inner agent and lifts what the rest of the
     graph needs into this graph's own state."""
-    result = await build_react_agent().ainvoke(
-        {"messages": [{"role": "user", "content": state["question"]}]})
+    with span("supervisor.route") as sp:
+        result = await build_react_agent().ainvoke(
+            {"messages": [{"role": "user", "content": state["question"]}]})
+        set_span_attrs(sp, calls=result.get("call_count", 0),
+                       answerable=result["structured_response"].answerable)
     return {"decision": result["structured_response"],
             "agent_calls": result.get("agent_calls", []),
             "captured_results": result.get("captured_results", {}),
@@ -332,6 +340,8 @@ def _render_decision(state: GraphState) -> dict:
     """
     shapes = {r.get("result_shape") for r in state.get("captured_results", {}).values()}
     target = "graph" if "graph" in shapes else "chart" if "table" in shapes else "none"
+    with span("supervisor.render_decision", render_target=target):
+        pass
     return {"render_target": target}
 
 
@@ -402,7 +412,8 @@ async def _compose(state: GraphState) -> dict:
     prompt = render(s.compose_template, {
         "question": state["question"],
         "evidence": evidence(state.get("captured_results", {}))})
-    response = await s.chat_model().ainvoke([HumanMessage(content=prompt)])
+    with span("supervisor.compose", evidence_chars=len(prompt)):
+        response = await s.chat_model().ainvoke([HumanMessage(content=prompt)])
     text = response.content if isinstance(response.content, str) else str(response.content)
     await asyncio.to_thread(check, text, "OUTPUT", s.guardrail_id, s.guardrail_version)
     return {"composed_answer": text}

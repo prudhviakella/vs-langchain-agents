@@ -21,7 +21,13 @@ dependencies = [
     "langchain-mcp-adapters>=0.1.0",
     "mcp>=1.0.0",
     "mcp-proxy-for-aws>=0.1.0",
+    # Produces the nested LangGraph -> model -> tools span tree. NOTE THE
+    # PACKAGE: openINFERENCE — opentelemetry-instrumentation-langchain has a
+    # known incompatibility with current LangGraph and emits no spans silently.
     "openinference-instrumentation-langchain",
+    # Exports those spans. Provides the `opentelemetry-instrument` command the
+    # Dockerfile runs, and the AWS configuration AgentCore Runtime presets.
+    "aws-opentelemetry-distro>=0.10.0",
     "pydantic>=2.0",
     "boto3>=1.39.8",
 ]

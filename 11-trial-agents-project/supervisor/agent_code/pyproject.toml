@@ -17,7 +17,13 @@ dependencies = [
     "langchain>=1.3.13",
     "langgraph>=1.2.9",
     "langchain-openai>=1.0.0",
+    # Produces the nested LangGraph -> model -> tools span tree. NOTE THE
+    # PACKAGE: openINFERENCE — opentelemetry-instrumentation-langchain has a
+    # known incompatibility with current LangGraph and emits no spans silently.
     "openinference-instrumentation-langchain",
+    # Exports those spans. Provides the `opentelemetry-instrument` command the
+    # Dockerfile runs, and the AWS configuration AgentCore Runtime presets.
+    "aws-opentelemetry-distro>=0.10.0",
     "pydantic>=2.0",
     # Deliberately no mcp / mcp-proxy-for-aws / langchain-mcp-adapters
     # here — unlike trial_graph and trial_search, the Supervisor never

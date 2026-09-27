@@ -24,6 +24,9 @@ uses: trial-agents/openai. An earlier version kept a separate
 trial-search/openai secret — two copies of one key, which drift the first
 time only one is rotated.
 
+Before STEP 1, CloudWatch Transaction Search is enabled if it is not already —
+without it, no agent's spans appear in CloudWatch (infra/observability.py).
+
 DEPLOY ORDER:  trial_graph -> trial_search -> supervisor
 """
 import argparse
@@ -32,7 +35,7 @@ from pathlib import Path
 
 import boto3
 
-from infra import (config_store, gateway, guardrail, iam, lambda_deploy, prompts,
+from infra import (preflight, observability, config_store, gateway, guardrail, iam, lambda_deploy, prompts,
                    runtime_deploy, runtime_iam)
 
 AGENT = "trial_search"
@@ -60,7 +63,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pinecone-index", default="rag-docs")
     args = ap.parse_args()
+    preflight.run(needs_gateway=True)
     prefix = config_store.prefix(AGENT)
+
+    print("=== observability: CloudWatch Transaction Search (once per account) ===")
+    observability.ensure_transaction_search()
 
     print("=== STEP 1: secrets ===")
     openai_arn = config_store.ensure_openai_secret()

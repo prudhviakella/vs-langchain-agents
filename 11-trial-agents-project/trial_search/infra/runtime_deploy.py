@@ -25,9 +25,8 @@ THREE SETTINGS THE RUNTIME CANNOT DO WITHOUT
 
 WHAT THIS DOES NOT DO
 
-    It does not log in to ECR. Run once per shell:
-      aws ecr get-login-password | docker login --username AWS \
-          --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
+    It does not check Docker or buildx — infra/preflight.py does, before
+    anything is created.
 """
 import subprocess
 import time
@@ -51,7 +50,28 @@ def ensure_ecr_repo() -> tuple[str, str]:
     return repo["repositoryUri"], repo["repositoryArn"]
 
 
+def ecr_login() -> str:
+    """docker login to this account's ECR registry. Returns the registry host.
+
+    Runs on every deploy: the token lasts 12 hours, so a login from an earlier
+    session fails the push with "no basic auth credentials". The password is
+    passed on stdin, never as an argument — arguments are visible to every
+    user on the machine through `ps`.
+    """
+    import base64
+    data = ecr.get_authorization_token()["authorizationData"][0]
+    user, password = base64.b64decode(data["authorizationToken"]).decode().split(":", 1)
+    registry = data["proxyEndpoint"].removeprefix("https://")
+    result = subprocess.run(["docker", "login", "--username", user, "--password-stdin", registry],
+                            input=password, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"docker login to {registry} failed: {result.stderr.strip()}")
+    print(f"  logged in to {registry}")
+    return registry
+
+
 def build_and_push(repo_uri: str, dockerfile_dir: str, tag: str = "latest") -> str:
+    ecr_login()
     image_uri = f"{repo_uri}:{tag}"
     print(f"  building and pushing {image_uri} (linux/arm64)")
     subprocess.run(["docker", "buildx", "build", "--platform", "linux/arm64",

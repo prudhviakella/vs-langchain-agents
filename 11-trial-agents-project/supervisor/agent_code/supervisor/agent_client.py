@@ -46,6 +46,12 @@ corpus has no per-user access control (every chunk's access = public).
 
 WHAT THIS DOES NOT DO
 
+    It does not export spans. It carries the CURRENT trace context to the
+    specialist: invoke_agent_runtime has first-class traceParent / traceState
+    / baggage parameters (they become the traceparent / tracestate / baggage
+    headers), and nothing fills them unless this call does. The specialist's
+    main.py attaches that context, so its spans join this trace.
+
     It does not retry. A failed specialist call raises AgentCallError; the
     call_agent tool turns that into a result the model can act on.
 """
@@ -55,6 +61,8 @@ import json
 import uuid
 
 import boto3
+
+from .tracing import inject_trace_headers
 
 _client = None
 MIN_SESSION_ID = 33          # InvokeAgentRuntime.runtimeSessionId min length
@@ -142,12 +150,17 @@ def parse_a2a_response(raw: bytes) -> dict:
 def call_specialist(agent_runtime_arn: str, agent_name: str, question: str,
                     conversation_id: str | None) -> dict:
     context_id = conversation_id or str(uuid.uuid4())
+    # W3C trace context of the CURRENT span -> the API's own trace parameters.
+    trace = inject_trace_headers()
+    trace_kwargs = {param: trace[header] for header, param in
+                    (("traceparent", "traceParent"), ("tracestate", "traceState"),
+                     ("baggage", "baggage")) if trace.get(header)}
     try:
         response = _get_client().invoke_agent_runtime(
             agentRuntimeArn=agent_runtime_arn, qualifier="DEFAULT",
             runtimeSessionId=session_id(context_id, agent_name),
             contentType="application/json", accept="application/json",
-            payload=build_a2a_envelope(question, context_id))
+            payload=build_a2a_envelope(question, context_id), **trace_kwargs)
         raw = response["response"].read()
     except Exception as exc:
         raise AgentCallError(f"failed to invoke {agent_name}: {exc}") from exc

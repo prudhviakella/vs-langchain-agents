@@ -21,6 +21,9 @@ specialist needs no code change. But its IAM role is scoped to the ARNs
 registered at deploy time — so redeploy the supervisor after adding one,
 and its role is re-scoped to include it.
 
+Before STEP 1, CloudWatch Transaction Search is enabled if it is not already —
+without it, no agent's spans appear in CloudWatch (infra/observability.py).
+
 DEPLOY ORDER:  trial_graph -> trial_search -> supervisor
 
 WHAT THIS DOES NOT DO
@@ -33,7 +36,7 @@ from pathlib import Path
 
 import boto3
 
-from infra import config_store, guardrail, prompts, runtime_deploy, runtime_iam
+from infra import preflight, observability, config_store, guardrail, prompts, runtime_deploy, runtime_iam
 
 AGENT = "supervisor"
 HERE = Path(__file__).parent
@@ -41,7 +44,11 @@ LIMITS = {"max_agent_calls_per_turn": 6}
 
 
 def main() -> None:
+    preflight.run(needs_gateway=False)
     prefix = config_store.prefix(AGENT)
+
+    print("=== observability: CloudWatch Transaction Search (once per account) ===")
+    observability.ensure_transaction_search()
 
     print("=== STEP 1: registry ===")
     specialists = config_store.read_registry()
