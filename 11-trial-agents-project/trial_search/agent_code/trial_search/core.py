@@ -18,6 +18,15 @@
         │
         └─ assemble                 TrialSearchResponse from STATE
 
+WHERE EVERYTHING COMES FROM
+
+    model           OpenAI chat model; key and model name from Secrets Manager
+    system prompt   Bedrock Prompt Management, at the version pinned in
+                    Parameter Store; the budgets below are rendered into it
+    budgets         Parameter Store
+    guardrail       Bedrock guardrail via ApplyGuardrail — guardrail.py
+    All loaded once, at container start, by config.settings().
+
 LOOP ENGINEERING — WHAT BOUNDS THIS LOOP
 
     recursion     each tool has its own call limit per turn. A refused
@@ -77,8 +86,8 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
-from .config import CFG
-from .prompt import SYSTEM_PROMPT
+from .config import settings
+from .guardrail import GuardrailBlocked, GuardrailMiddleware
 from .schemas import (ModelDecision, Passage, RetrievalStats, TrialSearchResponse,
                       collect_usage)
 
@@ -103,9 +112,10 @@ async def connect_tools():
     from mcp_proxy_for_aws.client import aws_iam_streamablehttp_client
     from langchain_mcp_adapters.tools import load_mcp_tools
 
+    s = settings()
     async with aws_iam_streamablehttp_client(
-            endpoint=CFG.gateway_url, aws_service="bedrock-agentcore",
-            aws_region=CFG.aws_region) as (read, write, _):
+            endpoint=s.gateway_url, aws_service="bedrock-agentcore",
+            aws_region=s.region) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
             yield await load_mcp_tools(session)
@@ -158,8 +168,9 @@ class RetrievalMiddleware(AgentMiddleware):
 
     state_schema = RetrievalState
 
-    def __init__(self, cfg=CFG):
+    def __init__(self, cfg=None):
         super().__init__()
+        cfg = cfg or settings()
         self.cfg = cfg
         self.limits = {SEARCH: cfg.max_searches_per_turn,
                        NEIGHBORS: cfg.max_neighbor_calls,
@@ -289,20 +300,20 @@ class RetrievalMiddleware(AgentMiddleware):
 
 # ── assembly ────────────────────────────────────────────────────────────
 
-def build_agent(tools: list, model=None):
-    """`model` is injectable so the loop can be tested without Bedrock."""
-    if model is None:
-        from langchain_aws import ChatBedrockConverse
-        model = ChatBedrockConverse(
-            model=CFG.model_id,
-            guardrail_config={"guardrailIdentifier": CFG.guardrail_id,
-                              "guardrailVersion": CFG.guardrail_version})
-    return create_agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT,
-                        response_format=ToolStrategy(ModelDecision),
-                        middleware=[RetrievalMiddleware()])
+def build_agent(tools: list, model=None, cfg=None):
+    """The agent loop. `model` and `cfg` are injectable so it runs in tests
+    without AWS or OpenAI. The guardrail is first in the middleware list, so
+    its INPUT check runs before anything else."""
+    s = cfg or settings()
+    return create_agent(
+        model=model or s.chat_model(), tools=tools, system_prompt=s.system_prompt,
+        response_format=ToolStrategy(ModelDecision),
+        middleware=[GuardrailMiddleware(s.guardrail_id, s.guardrail_version,
+                                        decision_tool="ModelDecision"),
+                    RetrievalMiddleware(s)])
 
 
-def assemble(result: dict) -> TrialSearchResponse:
+def assemble(result: dict, cfg=None) -> TrialSearchResponse:
     """TrialSearchResponse from the finished loop's STATE.
 
     STEP 1  dedupe by chunk_id — the first capture wins, so a search hit
@@ -310,14 +321,15 @@ def assemble(result: dict) -> TrialSearchResponse:
     STEP 2  order by document, then reading position
     STEP 3  choose result_shape from what actually happened
     """
+    s = cfg or settings()
     decision: ModelDecision = result["structured_response"]
     stats = RetrievalStats(
         search_calls=result.get("search_calls", 0),
         neighbor_calls=result.get("neighbor_calls", 0),
         table_calls=result.get("table_calls", 0),
         expansion_tokens=result.get("expansion_tokens", 0),
-        expansion_token_budget=CFG.expansion_token_budget)
-    usage = collect_usage(result.get("messages"), CFG.model_id)
+        expansion_token_budget=s.expansion_token_budget)
+    usage = collect_usage(result.get("messages"), s.openai_model)
 
     unique: dict[str, dict] = {}
     for p in result.get("captured_passages", []):
@@ -338,7 +350,14 @@ def assemble(result: dict) -> TrialSearchResponse:
 
 
 async def orchestrate(question: str) -> TrialSearchResponse:
-    async with connect_tools() as tools:
-        agent = build_agent(tools)
-        result = await agent.ainvoke({"messages": [{"role": "user", "content": question}]})
+    """One question, one bounded loop. A guardrail intervention ends the turn
+    as unanswerable, carrying the guardrail's own message."""
+    try:
+        async with connect_tools() as tools:
+            result = await build_agent(tools).ainvoke(
+                {"messages": [{"role": "user", "content": question}]})
+    except GuardrailBlocked as blocked:
+        return TrialSearchResponse(result_shape="unanswerable",
+                                   result_note=f"Blocked by guardrail ({blocked.source}): "
+                                               f"{blocked.message}")
     return assemble(result)

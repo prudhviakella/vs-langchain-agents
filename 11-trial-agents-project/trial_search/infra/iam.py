@@ -1,7 +1,7 @@
 """IAM roles for trial_search's Gateway and tools Lambda.
 
     lambda_role()            logs + read on THREE secrets:
-                               trial-search/openai     embed the query
+                               trial-agents/openai     embed the query (shared key)
                                trial-search/pinecone   search + fetch text
                                trial-graph/neo4j       NEXT traversal (Case A)
     tighten_secret_policy()  re-scopes the secret read to exact ARNs once

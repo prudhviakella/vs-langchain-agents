@@ -100,22 +100,38 @@ def find_entity_by_name(args: dict) -> dict:
     labels = _ENTITY_LABELS.get(entity_type, _ENTITY_LABELS["any"])
 
     with _get_driver().session() as session:
+        # Parameters go through the explicit `parameters` dict, never as
+        # keyword arguments. The driver's signature is
+        #   Session.run(self, query, parameters=None, **kwargs)
+        # so a Cypher parameter passed as query=... collides with run()'s
+        # own first argument and raises TypeError on every call — which is
+        # what an earlier version did. Found by running this Lambda behind
+        # a real A2A server in an end-to-end test.
         result = session.run(
-            "CALL db.index.fulltext.queryNodes($index, $query) "
+            "CALL db.index.fulltext.queryNodes($index, $search) "
             "YIELD node, score "
             "WHERE any(l IN labels(node) WHERE l IN $labels) "
             "RETURN labels(node) AS labels, properties(node) AS props, score "
             "ORDER BY score DESC LIMIT 10",
-            index=_FULLTEXT_INDEX, query=_escape_lucene(name), labels=labels,
+            parameters={"index": _FULLTEXT_INDEX, "search": _escape_lucene(name),
+                        "labels": labels},
         )
         candidates = []
         for row in result:
             label = row["labels"][0]
+            # The IDENTITY property — the one the uniqueness constraint (and so
+            # the index) is on: Trial.nctId, Sponsor.name, Site.facility. Not
+            # the node's `key` property, which holds a lower-cased form
+            # ('glaucoma' for 'Glaucoma') and would match nothing if the model
+            # anchored on the value returned here.
             key_prop = _KEY_PROPERTY.get(label, "name")
             candidates.append({
                 "label": label,
-                "key": row["props"].get(key_prop, ""),
-                "name": row["props"].get("name") or row["props"].get("facility", ""),
+                "property": key_prop,
+                "value": row["props"].get(key_prop, ""),
+                # Trials have no `name`; briefTitle is what an analyst recognises.
+                "name": (row["props"].get("name") or row["props"].get("facility")
+                         or row["props"].get("briefTitle", "")),
                 "score": row["score"],
             })
     return {"candidates": candidates}
@@ -224,6 +240,11 @@ def lambda_handler(event, context):
 
     log.info("dispatching to %s", matched)
     try:
-        return _TOOLS[matched](event)
+        result = _TOOLS[matched](event)
     except KeyError as exc:
         return {"error": True, "detail": f"missing required argument: {exc}"}
+    # The Lambda runtime serializes the return value with plain json.dumps.
+    # Neo4j can return temporal and spatial types (neo4j.time.Date, Point)
+    # that it cannot serialize; the invocation would then fail AFTER the
+    # query succeeded, with an error that names no query. Stringify them here.
+    return json.loads(json.dumps(result, default=str))

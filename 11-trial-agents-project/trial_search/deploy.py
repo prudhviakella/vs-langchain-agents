@@ -3,30 +3,28 @@
 
     python deploy.py --pinecone-index rag-docs
 
-    STEP 1  secrets        trial-search/openai, trial-search/pinecone
-                           (placeholders if new); trial-graph/neo4j must
-                           already exist — owned by trial_graph/deploy.py
-    STEP 2  IAM            Lambda role scoped to those three exact ARNs
-    STEP 3  Lambda         three tools, Linux-built dependencies
-    STEP 4  Gateway        AWS_IAM auth; target created or UPDATED with
-                           all three tool schemas
-    STEP 5  Guardrail
-    STEP 6  Runtime        ECR + linux/arm64 image + AgentCore Runtime,
-                           budgets passed as environment variables
-    STEP 7  gateway_config.json   read by supervisor/deploy.py
+    STEP 1   secrets      trial-search/pinecone, trial-agents/openai (placeholders if
+                          new); trial-graph/neo4j must exist — owned by trial_graph
+    STEP 2   Lambda role  read those three secrets
+    STEP 3   Lambda       semantic_search, expand_neighbors, expand_table
+    STEP 4   Gateway      AWS_IAM (SigV4); target created or updated
+    STEP 5   guardrail    shared; a new version only if the policy changed
+    STEP 6   prompt       prompts/system.md -> Prompt Management; version only on change
+    STEP 7   parameters   /trial-agents/trial_search/* — the budgets live here, and
+                          are rendered into the prompt at start, so the prompt
+                          states the limits the middleware actually enforces
+    STEP 8   runtime      role, linux/arm64 image, AgentCore Runtime
+    STEP 9   registry     /trial-agents/registry/trial_search = {arn, description}
+    STEP 10  deployment.json
 
-DEPLOY ORDER
+ONE OPENAI SECRET
 
-    trial_graph/deploy.py  ->  trial_search/deploy.py  ->  supervisor/deploy.py
+The Lambda embeds queries with the same OpenAI key the agent's chat model
+uses: trial-agents/openai. An earlier version kept a separate
+trial-search/openai secret — two copies of one key, which drift the first
+time only one is rotated.
 
-trial_search needs trial_graph's Neo4j secret for expand_neighbors (the
-NEXT traversal). This script stops with a clear message if it is missing.
-
-WHAT THIS DOES NOT DO
-
-    It does not log in to ECR. Run once per shell before deploying:
-      aws ecr get-login-password | docker login --username AWS \
-          --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
+DEPLOY ORDER:  trial_graph -> trial_search -> supervisor
 """
 import argparse
 import json
@@ -34,62 +32,50 @@ from pathlib import Path
 
 import boto3
 
-from infra import gateway, guardrail, iam, lambda_deploy, runtime_deploy, runtime_iam
+from infra import (config_store, gateway, guardrail, iam, lambda_deploy, prompts,
+                   runtime_deploy, runtime_iam)
 
-OUTPUT_PATH = Path(__file__).parent / "gateway_config.json"
-OPENAI_SECRET = "trial-search/openai"
+AGENT = "trial_search"
+HERE = Path(__file__).parent
 PINECONE_SECRET = "trial-search/pinecone"
 NEO4J_SECRET = "trial-graph/neo4j"          # owned by trial_graph
-MODEL_ID = "us.anthropic.claude-sonnet-4-6-20251001-v1:0"
-
-# Loop budgets. Passed to the Runtime as environment variables so each
-# environment (dev/tst/prd) can tune them without a code change.
-BUDGETS = {
-    "MAX_SEARCHES_PER_TURN": "5",
-    "MAX_NEIGHBOR_CALLS": "3",
-    "MAX_TABLE_CALLS": "3",
-    "MAX_WINDOW": "10",
-    "EXPANSION_TOKEN_BUDGET": "6000",
-}
-
-sm = boto3.client("secretsmanager")
+DESCRIPTION = ("What the 20 trial protocols actually say: eligibility wording, study "
+               "design, endpoint definitions, safety and adverse event sections, and the "
+               "values inside protocol tables. Answers by retrieving passages; narrows to "
+               "one protocol only when the question includes that protocol's docId. "
+               "Does not know sponsors, sites or registry facts.")
+BUDGETS = {"max_searches_per_turn": 5, "max_neighbor_calls": 3, "max_table_calls": 3,
+           "max_window": 10, "expansion_token_budget": 6000}
 
 
-def ensure_placeholder(name: str) -> str:
+def _require(name: str, owner: str) -> str:
     try:
-        return sm.describe_secret(SecretId=name)["ARN"]
-    except sm.exceptions.ResourceNotFoundException:
-        print(f"  creating placeholder secret {name!r}")
-        return sm.create_secret(Name=name, SecretString=json.dumps(
-            {"api_key": "replace-me"}))["ARN"]
-
-
-def require(name: str, owner: str) -> str:
-    try:
-        return sm.describe_secret(SecretId=name)["ARN"]
-    except sm.exceptions.ResourceNotFoundException:
+        return boto3.client("secretsmanager").describe_secret(SecretId=name)["ARN"]
+    except boto3.client("secretsmanager").exceptions.ResourceNotFoundException:
         raise SystemExit(f"secret {name!r} does not exist. Run {owner}/deploy.py first — "
-                         "trial_search reads the same Neo4j credential.")
+                         "expand_neighbors reads the same Neo4j credential.")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pinecone-index", default="rag-docs")
     args = ap.parse_args()
-    region = boto3.Session().region_name or "us-east-1"
+    prefix = config_store.prefix(AGENT)
 
     print("=== STEP 1: secrets ===")
-    arns = [ensure_placeholder(OPENAI_SECRET), ensure_placeholder(PINECONE_SECRET),
-            require(NEO4J_SECRET, "trial_graph")]
+    openai_arn = config_store.ensure_openai_secret()
+    pinecone_arn = config_store.ensure_secret(PINECONE_SECRET, {"api_key": "replace-me"})
+    neo4j_arn = _require(NEO4J_SECRET, "trial_graph")
 
-    print("\n=== STEP 2: IAM ===")
+    print("\n=== STEP 2: Lambda role ===")
     lambda_role_arn = iam.lambda_role([f"arn:aws:secretsmanager:*:*:secret:{n}"
-                                       for n in (OPENAI_SECRET, PINECONE_SECRET, NEO4J_SECRET)])
-    iam.tighten_secret_policy(arns)
+                                       for n in (config_store.OPENAI_SECRET,
+                                                 PINECONE_SECRET, NEO4J_SECRET)])
+    iam.tighten_secret_policy([openai_arn, pinecone_arn, neo4j_arn])
 
     print("\n=== STEP 3: tools Lambda ===")
     lambda_arn = lambda_deploy.deploy(lambda_role_arn, {
-        "OPENAI_SECRET_ID": OPENAI_SECRET, "PINECONE_SECRET_ID": PINECONE_SECRET,
+        "OPENAI_SECRET_ID": config_store.OPENAI_SECRET, "PINECONE_SECRET_ID": PINECONE_SECRET,
         "NEO4J_SECRET_ID": NEO4J_SECRET, "PINECONE_INDEX": args.pinecone_index})
 
     print("\n=== STEP 4: Gateway ===")
@@ -97,39 +83,44 @@ def main() -> None:
     lambda_deploy.allow_gateway_invoke(gw["gatewayArn"])
     gateway.create_lambda_target(gw["gatewayId"], lambda_arn)
 
-    print("\n=== STEP 5: Guardrail ===")
-    gr = guardrail.create_guardrail()
+    print("\n=== STEP 5: guardrail ===")
+    gr = guardrail.ensure_guardrail()
 
-    print("\n=== STEP 6: Runtime ===")
+    print("\n=== STEP 6: prompt ===")
+    prompt = prompts.publish("trial-search-system", HERE / "prompts" / "system.md",
+                             "trial_search system prompt")
+
+    print("\n=== STEP 7: parameters ===")
+    config_store.put_parameters(prefix, {
+        "gateway_url": gw["gatewayUrl"], **BUDGETS,
+        "guardrail_id": gr["id"], "guardrail_version": gr["version"],
+        "prompt_id": prompt["id"], "prompt_version": prompt["version"],
+        "openai_secret_id": config_store.OPENAI_SECRET})
+
+    print("\n=== STEP 8: runtime ===")
     repo_uri, repo_arn = runtime_deploy.ensure_ecr_repo()
-    runtime_role_arn = runtime_iam.runtime_role(
-        gateway_arn=gw["gatewayArn"], ecr_repo_arn=repo_arn,
-        model_id=MODEL_ID, guardrail_arn=gr["guardrailArn"])
-    image_uri = runtime_deploy.build_and_push(repo_uri, str(Path(__file__).parent / "agent_code"))
-    runtime_arn = runtime_deploy.deploy_runtime(image_uri, runtime_role_arn, {
-        "GATEWAY_URL": gw["gatewayUrl"], "AWS_REGION": region,
-        "GUARDRAIL_ID": gr["guardrailId"], "GUARDRAIL_VERSION": gr["version"],
-        "MODEL_ID": MODEL_ID, **BUDGETS})
+    role_arn = runtime_iam.runtime_role(
+        gateway_arn=gw["gatewayArn"], ecr_repo_arn=repo_arn, guardrail_arn=gr["arn"],
+        prompt_arns=[prompt["arn"]], secret_arn=openai_arn, param_prefix=prefix)
+    image_uri = runtime_deploy.build_and_push(repo_uri, str(HERE / "agent_code"))
+    runtime_arn = runtime_deploy.deploy_runtime(image_uri, role_arn, {
+        "PARAM_PREFIX": prefix,
+        "AWS_REGION": boto3.Session().region_name or "us-east-1"})
 
-    print("\n=== STEP 7: gateway_config.json ===")
-    OUTPUT_PATH.write_text(json.dumps({
-        "runtime_arn": runtime_arn, "gateway_url": gw["gatewayUrl"],
-        "gateway_id": gw["gatewayId"], "gateway_arn": gw["gatewayArn"],
-        "guardrail_id": gr["guardrailId"], "guardrail_arn": gr["guardrailArn"],
-        "guardrail_version": gr["version"], "model_id": MODEL_ID,
-        "tools": [t["name"] for t in gateway.TOOL_SCHEMA], "budgets": BUDGETS,
-    }, indent=2))
-    print(f"  wrote {OUTPUT_PATH}")
+    print("\n=== STEP 9: registry ===")
+    config_store.register(AGENT, runtime_arn, DESCRIPTION)
 
-    placeholders = [n for n in (OPENAI_SECRET, PINECONE_SECRET)
-                    if json.loads(sm.get_secret_value(SecretId=n)["SecretString"])
-                    .get("api_key") == "replace-me"]
-    if placeholders:
-        print("\nREMINDER — still placeholders:")
-        for n in placeholders:
-            print(f"  aws secretsmanager put-secret-value --secret-id {n} "
-                  "--secret-string '{\"api_key\":\"...\"}'")
-    print(f"\ndone. trial_search runtime: {runtime_arn}")
+    print("\n=== STEP 10: deployment.json ===")
+    (HERE / "deployment.json").write_text(json.dumps({
+        "runtime_arn": runtime_arn, "param_prefix": prefix,
+        "gateway_url": gw["gatewayUrl"], "gateway_arn": gw["gatewayArn"],
+        "guardrail": gr, "prompt": prompt, "budgets": BUDGETS}, indent=2))
+
+    for name in (config_store.OPENAI_SECRET, PINECONE_SECRET):
+        unset = config_store.placeholders(name)
+        if unset:
+            print(f"\nREMINDER: {name} still has placeholder {unset}.")
+    print(f"\ndone. {AGENT} runtime: {runtime_arn}")
 
 
 if __name__ == "__main__":

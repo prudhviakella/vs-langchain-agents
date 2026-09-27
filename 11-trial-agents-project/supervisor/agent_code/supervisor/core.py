@@ -1,320 +1,309 @@
-"""Supervisor's core agent: routes between trial_graph and trial_search.
-
-This file is built around an EXPLICIT LangGraph StateGraph — three real
-nodes, visibly chained, deliberately alternating probabilistic and
-deterministic:
+"""Supervisor core: an explicit graph that routes between the two
+specialists, then composes the answer.
 
     orchestrate(question)
-        |
+        │
         v
     build_graph()
-        |
-        |-- route              PROBABILISTIC — an LLM, via the inner
-        |                       ReAct agent build_react_agent() builds
-        |                       (its own model/tool loop, ToolStrategy,
-        |                       AgentCallBudgetMiddleware,
-        |                       RequireAgentCallMiddleware — see their
-        |                       own docstrings). Decides which
-        |                       specialist(s) to call and produces
-        |                       SupervisorDecision.
-        |
-        |-- render_decision     DETERMINISTIC — plain code, no model
-        |                       call. Inspects each captured result's
-        |                       result_shape and sets render_target.
-        |                       No render TOOL exists for the model to
-        |                       remember to call — the reference
-        |                       Supervisor's own principle, "rendering
-        |                       is code, not a tool," made visible here
-        |                       as an actual graph node rather than an
-        |                       implicit rule buried in a bigger
-        |                       function.
-        |
-        |-- compose             PROBABILISTIC, a SEPARATE model call —
-        |                       see its own docstring for why this
-        |                       can't be the same call that produces
-        |                       SupervisorDecision.
-        |
+        │
+        ├─ route             PROBABILISTIC. The inner ReAct agent: an LLM
+        │                    choosing which specialist to call, via one
+        │                    tool (call_agent), bounded by middleware.
+        │
+        ├─ render_decision   DETERMINISTIC. Plain code over the shapes
+        │                    already in state. No model call, and no
+        │                    render TOOL for a model to forget to call.
+        │
+        └─ compose           PROBABILISTIC. A separate LLM call writes
+                             the analyst-facing prose.
+        │
         v
     SupervisorResponse
 
-WHY route IS ITSELF A NESTED GRAPH, NOT REBUILT HERE
+WHY route IS A NESTED GRAPH RATHER THAN REBUILT HERE
 
-build_react_agent() calls create_agent(), which builds and hides its
-own inner StateGraph (model node, tools node, a conditional edge that
-loops back until the model stops calling tools) behind one .ainvoke()
-call. That inner loop already carries real, tested guarantees —
-ToolStrategy avoiding the hollow-decision bug, the budget and
-require-a-call middleware. Rebuilding it by hand here would mean
-re-deriving all of that from scratch for no benefit; nesting the
-compiled inner graph as this outer graph's one probabilistic "route"
-step keeps it intact while still making the OUTER shape — probabilistic
-then deterministic then probabilistic — an explicit, inspectable graph
-rather than three function calls in a row that happen to run in order.
+create_agent() builds and hides its own StateGraph — model node, tool
+node, a conditional edge looping until the model stops calling tools.
+That loop already carries ToolStrategy and the budget/require-a-call
+middleware. Nesting the compiled agent as this graph's one probabilistic
+node keeps those intact while making the OUTER shape — probabilistic,
+deterministic, probabilistic — an inspectable graph rather than three
+function calls that merely happen to run in order.
 
-WHY DATA STILL NEVER FLOWS THROUGH THE MODEL HERE, EVEN THOUGH THIS
-AGENT NEVER TOUCHES A DATABASE ITSELF
+WHERE EVERYTHING COMES FROM
 
-The same principle from trial_graph and trial_search applies one level
-up: call_agent's own tool result is a specialist's full structured
-response (graph nodes, passages, whatever it found) — potentially large.
-The model sees a compact summary; the full response is stashed in state
-for compose() and the final SupervisorResponse to use directly.
+    model             OpenAI chat model; key and model name from Secrets Manager
+    system prompt     Bedrock Prompt Management, version pinned in Parameter
+                      Store; the AVAILABLE AGENTS block is rendered from the
+                      registry, so it can never name an agent that is not there
+    compose prompt    Bedrock Prompt Management, rendered per question
+    specialists       Parameter Store registry: each specialist writes its own
+                      ARN and description there when it deploys
+    guardrail         ApplyGuardrail — on the question (INPUT), on every model
+                      turn, and on the composed answer (OUTPUT)
+
+FIVE FACTS VERIFIED AT RUNTIME, NOT ASSUMED
+
+    1. Middleware state must be declared with `state_schema` (a subclass
+       of AgentState). `state_schema_extra` — used by the previous
+       version — is not a LangChain attribute: it is ignored and every
+       Command update is silently dropped, so call_count stayed 0 and
+       RequireAgentCallMiddleware could never see a call that happened.
+    2. Under ainvoke, a middleware defining only wrap_tool_call raises
+       NotImplementedError on the first tool call.
+    3. The same is true of wrap_model_call: sync-only raises
+       NotImplementedError under ainvoke. Both forms are defined here.
+    4. A tool returning Command must carry the real tool_call_id. The
+       previous version passed "" from inside the tool and patched it in
+       middleware; the tool now takes InjectedToolCallId, which LangChain
+       fills in, so the id is never wrong.
+    5. ToolStrategy, not a bare response_format schema — otherwise the
+       model can be structurally prevented from calling any tool and
+       will answer having called no specialist at all.
+
+WHY DATA STILL NEVER FLOWS THROUGH THE MODEL
+
+call_agent's result is a specialist's full response — graph nodes,
+passages, rows. The model sees a compact summary; the full response goes
+to state for compose() and the final response to read directly.
 """
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import logging
 import operator
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import tool
-from langchain_aws import ChatBedrockConverse
 from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.tools import InjectedToolCallId
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from . import agent_client
-from .config import CFG
-from .prompt import SYSTEM_PROMPT
-from .schemas import AgentCall, SupervisorDecision, SupervisorResponse, collect_usage
+from .config import settings
+from .guardrail import GuardrailBlocked, GuardrailMiddleware, check
+from .schemas import (AgentCall, SupervisorDecision, SupervisorResponse,
+                      collect_usage)
 
 log = logging.getLogger("agent.supervisor.core")
 
-_SPECIALISTS = {
-    "trial_graph": CFG.trial_graph_arn,
-    "trial_search": CFG.trial_search_arn,
-}
+DECISION_TOOL = "SupervisorDecision"
+
+# The A2A contextId of the conversation this turn belongs to. Set once in
+# orchestrate(); read by call_agent to build each specialist's session id.
+# A ContextVar rather than a tool argument: the model must not be able to
+# choose or forge it. Verified that the value reaches the sync tool's
+# thread — LangChain runs sync tools via run_in_executor, which copies
+# the calling context.
+CONVERSATION: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "conversation_id", default=None)
 
 
-# ── The one tool ─────────────────────────────────────────────────────
+def _clean(value) -> str:
+    """Neutralize one value before it enters the model's context. Notes
+    are written by another agent's LLM, which may echo trial or sponsor
+    text straight out of a PDF — content this project did not author."""
+    text = str(value).replace("\n", " ").replace("\r", " ")
+    text = text.replace("<untrusted_data>", "").replace("</untrusted_data>", "")
+    text = " ".join(text.split())
+    return text[:300] + "…" if len(text) > 300 else text
+
+
+def summarize_call(agent_name: str, result: dict) -> str:
+    """Compact view of a specialist's response — never the full data."""
+    shape = result.get("result_shape", "unknown")
+    parts = [f"{agent_name} returned result_shape={shape!r}"]
+    if shape == "graph":
+        parts.append(f"{len(result.get('nodes', []))} nodes, "
+                     f"{len(result.get('relationships', []))} relationships")
+    elif shape == "table":
+        parts.append(f"{len(result.get('rows', []))} rows, "
+                     f"columns: {', '.join(str(c) for c in result.get('columns', [])[:8])}")
+    elif shape == "passages":
+        parts.append(f"{len(result.get('passages', []))} passage(s)")
+    else:
+        parts.append("no usable result. Do not retry the same question with the "
+                     "same agent — ask the other agent, ask a narrower question, "
+                     "or report the gap honestly.")
+    if result.get("result_note"):
+        parts.append(f"note: {_clean(result['result_note'])}")
+    return " — ".join(parts)
+
+
+# ── the one tool ────────────────────────────────────────────────────────
 
 @tool
 def call_agent(agent_name: str, question: str, rationale: str,
+               tool_call_id: Annotated[str, InjectedToolCallId],
                observation: str = "") -> Command:
     """Route a question to a specialist agent.
 
-    agent_name: "trial_graph" (relationships between trials, sponsors,
-        drugs, diseases, sites) or "trial_search" (what the protocol
-        documents actually say).
-    question: the question to send — phrase it for the SPECIALIST, not
-        necessarily verbatim from the analyst; narrow or rephrase if
-        that will get a better answer.
-    rationale: one sentence on why this specialist, this question, now.
-    observation: one sentence on what you learned from a PRIOR call this
-        turn, if any — empty on the first call.
+    agent_name: "trial_graph" for relationships between trials, sponsors,
+        drugs, diseases and sites; "trial_search" for what the protocol
+        documents actually say.
+    question: phrased for the SPECIALIST — narrow or rephrase it if that
+        gets a better answer than the analyst's wording.
+    rationale: one sentence on why this agent, this question, now.
+    observation: one sentence on what a PRIOR call showed. Empty on the
+        first call.
 
-    Emitted in this order (rationale/observation as tool ARGUMENTS, not
-    separate text) so the reasoning panel reads as a coherent narrative
-    even when the model doesn't also emit a text block alongside the
-    tool call — a real gap the reference Supervisor found: a model
-    bound with tool_choice=any often emits no text at all alongside a
-    tool call, and an analyst watching a turn with real queries and zero
-    explanation is a genuine trust problem, not a cosmetic one.
+    rationale and observation are tool ARGUMENTS rather than surrounding
+    text because a model bound with tool_choice=any often emits no text
+    at all next to a tool call. An analyst watching a turn of real queries
+    with no explanation is a trust problem, not a cosmetic one.
     """
-    if agent_name not in _SPECIALISTS:
-        return ToolMessage(
-            content=f"REJECTED: {agent_name!r} is not a known specialist. "
-                    f"Valid names: {', '.join(_SPECIALISTS)}.",
-            tool_call_id="")  # overwritten by the framework on a real call
+    specialists = settings().specialists
+    if agent_name not in specialists:
+        return Command(update={"messages": [ToolMessage(
+            tool_call_id=tool_call_id,
+            content=f"REJECTED: {agent_name!r} is not a specialist. "
+                    f"Valid names: {', '.join(sorted(specialists))}.")]})
 
     try:
         result = agent_client.call_specialist(
-            _SPECIALISTS[agent_name], question, context_id=agent_name)
+            specialists[agent_name]["arn"], agent_name, question, CONVERSATION.get())
         succeeded = True
     except agent_client.AgentCallError as exc:
         log.warning("call to %s failed: %s", agent_name, exc)
         result = {"result_shape": "error", "result_note": str(exc)}
         succeeded = False
 
-    record = AgentCall(
-        agent_name=agent_name, question=question, rationale=rationale,
-        result_shape=result.get("result_shape", "unknown"), succeeded=succeeded,
-    )
-
+    record = AgentCall(agent_name=agent_name, question=question,
+                       rationale=rationale, succeeded=succeeded,
+                       result_shape=result.get("result_shape", "unknown"))
     return Command(update={
+        "call_count": 1,
         "agent_calls": [record.model_dump()],
         "captured_results": {agent_name: result},
-        "messages": [ToolMessage(content=_summarize_call(agent_name, result),
-                                 tool_call_id="")],
-    })
+        "messages": [ToolMessage(tool_call_id=tool_call_id,
+                                 content=summarize_call(agent_name, result))]})
 
 
-def _clean(value) -> str:
-    """Neutralize one value before it enters the model's own context.
+# ── state ───────────────────────────────────────────────────────────────
 
-    Adapted from the reference Supervisor's own _clean() — same
-    reasoning applies here even though this corpus has no per-user
-    access control to protect: result_note is written by another
-    agent's own LLM, which in turn may echo trial/sponsor/site names
-    straight out of PDF text. That text was authored by whoever
-    submitted the protocol to the registry, not by this project — a
-    field like a sponsor's own free-text description is exactly the
-    kind of place adversarial or malformed content could show up, even
-    if less likely here than in a fraud-investigation context where the
-    records are written by parties actively being investigated.
+def _merge(left: dict, right: dict) -> dict:
+    """Merge two specialists' results rather than replacing.
+
+    A plain `dict` field has no reducer, so LangGraph REPLACES it on every
+    update: calling trial_graph after trial_search dropped the search
+    result entirely, and compose() then wrote its answer from half the
+    evidence with nothing to indicate anything was missing. Caught by
+    asserting on captured_results after a two-specialist turn.
     """
-    text = str(value).replace("\n", " ").replace("\r", " ")
-    text = text.replace("<untrusted_data>", "").replace("</untrusted_data>", "")
-    text = " ".join(text.split())
-    cap = 300
-    return text[:cap] + "…" if len(text) > cap else text
+    return {**(left or {}), **(right or {})}
 
 
-def _summarize_call(agent_name: str, result: dict) -> str:
-    """Compact view of a specialist's response — enough for the model
-    to decide what to do next, never the full data.
-    """
-    shape = result.get("result_shape", "unknown")
-    note = result.get("result_note", "")
-    parts = [f"{agent_name} returned result_shape={shape!r}"]
-
-    if shape == "graph":
-        parts.append(f"{len(result.get('nodes', []))} nodes, "
-                     f"{len(result.get('relationships', []))} relationships")
-    elif shape == "table":
-        parts.append(f"{len(result.get('rows', []))} rows")
-    elif shape == "passages":
-        parts.append(f"{len(result.get('passages', []))} passage(s)")
-    elif shape in ("empty", "unanswerable", "not_executed", "error"):
-        # Adapted from the reference Supervisor's own unanswerable-case
-        # guidance: naming the actual next moves (a different agent, a
-        # narrower question, an honest gap) heads off the failure mode
-        # of the model just re-asking the same specialist the same
-        # question and burning the call budget on a repeat.
-        parts.append("no usable result. Do not retry the same question "
-                     "with the same agent — ask a different agent, ask a "
-                     "narrower question, or report the gap honestly.")
-
-    if note:
-        parts.append(f"note: {_clean(note)}")
-    return " — ".join(parts)
+class SupervisorState(AgentState):
+    call_count: Annotated[int, operator.add]
+    agent_calls: Annotated[list[dict], operator.add]
+    captured_results: Annotated[dict, _merge]
 
 
-# ── Middleware ────────────────────────────────────────────────────────
+# ── middleware ──────────────────────────────────────────────────────────
 
 class AgentCallBudgetMiddleware(AgentMiddleware):
-    """Caps call_agent calls per turn. Each call is a real network round
-    trip to another agent's own LangGraph loop — an unbounded fan-out on
-    an ambiguous question is a cost and latency problem, same reasoning
-    as the reference Supervisor's own AgentCallBudgetMiddleware.
-    """
-    state_schema_extra = {"call_count": (int, 0, operator.add)}
+    """Caps specialist calls per turn. Each one is a network round trip
+    into another agent's own LangGraph loop."""
+
+    state_schema = SupervisorState
+
+    def __init__(self, cfg=None):
+        super().__init__()
+        self.limit = (cfg or settings()).max_agent_calls_per_turn
+
+    def _gate(self, request):
+        if not request.tool_call["name"].endswith("call_agent"):
+            return request
+        used = (request.state or {}).get("call_count", 0)
+        if used >= self.limit:
+            return ToolMessage(
+                tool_call_id=request.tool_call["id"],
+                content=f"REFUSED: {used} specialist calls already made this "
+                        f"turn (limit {self.limit}). Produce "
+                        "your decision from what you have, or set "
+                        "answerable=false if nothing usable came back.")
+        return request
 
     def wrap_tool_call(self, request, handler):
-        if request.tool_call["name"] != "call_agent":
-            return handler(request)
+        gated = self._gate(request)
+        return gated if isinstance(gated, ToolMessage) else handler(gated)
 
-        if request.state.get("call_count", 0) >= CFG.max_agent_calls_per_turn:
-            return ToolMessage(
-                content=f"CALL BUDGET EXHAUSTED ({CFG.max_agent_calls_per_turn} "
-                        "specialist calls this turn). Stop calling specialists "
-                        "and produce your decision from what has been found so "
-                        "far, or set answerable=false if nothing usable came "
-                        "back.",
-                tool_call_id=request.tool_call["id"])
-
-        result = handler(request)
-        if isinstance(result, Command):
-            result.update["call_count"] = 1
-            # The tool_call_id placeholders above get filled in properly
-            # here, where the real id from the framework is available.
-            for msg in result.update.get("messages", []):
-                if isinstance(msg, ToolMessage) and not msg.tool_call_id:
-                    msg.tool_call_id = request.tool_call["id"]
-            return result
-        return result
+    async def awrap_tool_call(self, request, handler):
+        gated = self._gate(request)
+        return gated if isinstance(gated, ToolMessage) else await handler(gated)
 
 
 class RequireAgentCallMiddleware(AgentMiddleware):
-    """Makes it structurally impossible to produce a SupervisorDecision
-    with answerable=True and zero call_agent calls made this turn.
+    """Makes a SupervisorDecision with answerable=True and zero specialist
+    calls structurally impossible.
 
-    Ported directly from the reference Supervisor's own middleware,
-    which exists because of a real, specific production incident there:
-    a question needing a graph traversal, where the model correctly
-    identified the need but then emitted its decision on the same turn
-    instead of actually calling an agent. The composer then wrote a
-    plausible-sounding negative finding — indistinguishable from a real
-    search that came back empty. No search ever ran. The reference
-    system's own framing is worth repeating exactly: "not an error, not
-    a visible blank, but a confident negative finding an analyst would
-    reasonably act on. A silent wrong answer is worse than a loud
-    failure." Applied here preemptively, before this Supervisor has had
-    the chance to reproduce that incident on its own.
+    The failure this prevents is specific: the model identifies that a
+    traversal is needed, then emits its decision without calling anything.
+    The composer then writes a plausible negative finding — indistinguish-
+    able from a real search that came back empty. No search ran. A silent
+    wrong answer is worse than a loud failure.
 
-    Deliberately checks the tool NAME on any pending tool call, not
-    merely whether tool_calls is non-empty — under ToolStrategy, the
-    structured decision itself arrives AS a tool call (named after the
-    schema). A naive "are there any tool calls" check would treat the
-    decision-in-progress as "a pending call, nothing to guard yet,"
-    defeating this middleware's own purpose. This was the reference
-    guard's own first bug, caught by a regression test built from the
-    original trace — checked here from the start rather than
-    rediscovered independently.
+    The check is on the tool NAME, not on "are there any tool calls":
+    under ToolStrategy the decision itself ARRIVES as a tool call, so a
+    naive check reads every final answer as "mid-loop, nothing to guard".
     """
+
+    state_schema = SupervisorState
+
+    def _hollow(self, request, response):
+        """The decision call, if this response is a hollow one."""
+        message = response.result[0]
+        calls = getattr(message, "tool_calls", None) or []
+        decision = next((c for c in calls if c["name"].endswith(DECISION_TOOL)), None)
+        if decision is None:
+            return None                      # mid-loop, or calling a specialist
+        args = decision.get("args", {})
+        if not args.get("answerable", True) or args.get("clarifying_question"):
+            return None                      # an honest refusal is not hollow
+        if (request.state or {}).get("call_count", 0) > 0:
+            return None                      # a specialist really was called
+        return decision
+
+    def _retry(self, request):
+        log.warning("hollow SupervisorDecision — retrying once")
+        return request.override(messages=request.messages + [HumanMessage(
+            content="You have not called any specialist yet. Call call_agent "
+                    "before producing a decision — there is no way to answer "
+                    "without checking trial_graph or trial_search first.")])
 
     def wrap_model_call(self, request, handler):
         response = handler(request)
-        message = response.result[0]
+        # One corrective retry only: a guard that can loop is a worse
+        # failure than the one it prevents.
+        return handler(self._retry(request)) if self._hollow(request, response) else response
 
-        tool_calls = getattr(message, "tool_calls", None) or []
-        decision_call = next(
-            (c for c in tool_calls if c["name"] == "SupervisorDecision"), None)
-        if decision_call is None:
-            return response  # mid-loop, or genuinely calling call_agent — fine
-
-        args = decision_call.get("args", {})
-        if not args.get("answerable", True):
-            return response  # an honest "cannot answer" is not hollow
-        if args.get("clarifying_question"):
-            return response  # a real clarification is not hollow either
-
-        if request.state.get("call_count", 0) > 0:
-            return response  # at least one specialist was actually called
-
-        # Hollow: answerable=True, no clarification, zero specialist
-        # calls made. One corrective retry, then give up — a guard that
-        # can loop is a worse failure than the one it prevents.
-        log.warning("hollow SupervisorDecision detected — retrying once")
-        retry_request = request.override(messages=request.messages + [
-            HumanMessage(content="You have not called any specialist yet. "
-                                 "You must call call_agent before producing "
-                                 "a decision — there is no way to answer "
-                                 "this question without checking trial_graph "
-                                 "or trial_search first.")])
-        return handler(retry_request)
+    async def awrap_model_call(self, request, handler):
+        response = await handler(request)
+        if self._hollow(request, response):
+            return await handler(self._retry(request))
+        return response
 
 
-# ── Assembly ──────────────────────────────────────────────────────────
+# ── graph nodes ─────────────────────────────────────────────────────────
 
-def build_react_agent():
-    """The probabilistic core: an LLM choosing which specialist to call,
-    how many times, and when it has enough to decide. This is the ONE
-    node in the outer graph below where the model actually reasons —
-    everything else in this file is either delivering that reasoning
-    somewhere (route) or plain code (render_decision).
-    """
-    model = ChatBedrockConverse(
-        model=CFG.model_id,
-        guardrail_config={"guardrailIdentifier": CFG.guardrail_id,
-                          "guardrailVersion": CFG.guardrail_version},
-    )
+def build_react_agent(model=None, cfg=None):
+    """The probabilistic core. `model` and `cfg` are injectable for testing.
+    The guardrail is first, so its INPUT check runs before anything else."""
+    s = cfg or settings()
     return create_agent(
-        model=model, tools=[call_agent], system_prompt=SYSTEM_PROMPT,
+        model=model or s.chat_model(), tools=[call_agent], system_prompt=s.system_prompt,
         response_format=ToolStrategy(SupervisorDecision),
-        middleware=[AgentCallBudgetMiddleware(), RequireAgentCallMiddleware()],
-    )
+        middleware=[GuardrailMiddleware(s.guardrail_id, s.guardrail_version,
+                                        decision_tool=DECISION_TOOL),
+                    AgentCallBudgetMiddleware(s), RequireAgentCallMiddleware()])
 
 
 class GraphState(TypedDict, total=False):
-    """State threaded through the outer graph below — route writes the
-    first four fields, render_decision writes render_target, compose
-    writes composed_answer. Every field here is either the original
-    question or something a node actually produced; nothing is guessed
-    at construction time.
-    """
     question: str
     decision: SupervisorDecision
     agent_calls: list[dict]
@@ -325,97 +314,101 @@ class GraphState(TypedDict, total=False):
 
 
 async def _route(state: GraphState) -> dict:
-    """PROBABILISTIC node. Runs the inner ReAct agent (its own
-    tool-calling loop, middleware, and structured-output guarantees —
-    see build_react_agent()) and lifts the parts of its result the rest
-    of this graph needs into this graph's own state.
-    """
-    agent = build_react_agent()
-    result = await agent.ainvoke(
+    """PROBABILISTIC. Runs the inner agent and lifts what the rest of the
+    graph needs into this graph's own state."""
+    result = await build_react_agent().ainvoke(
         {"messages": [{"role": "user", "content": state["question"]}]})
-    return {
-        "decision": result["structured_response"],
-        "agent_calls": result.get("agent_calls", []),
-        "captured_results": result.get("captured_results", {}),
-        "usage": collect_usage(result["messages"], CFG.model_id),
-    }
+    return {"decision": result["structured_response"],
+            "agent_calls": result.get("agent_calls", []),
+            "captured_results": result.get("captured_results", {}),
+            "usage": collect_usage(result["messages"], settings().openai_model)}
 
 
 def _render_decision(state: GraphState) -> dict:
-    """DETERMINISTIC node. No model call — a plain rule over the shapes
-    already sitting in captured_results.
+    """DETERMINISTIC. A fixed rule over the shapes already in state.
 
-    This is the actual point of building this as an explicit graph
-    rather than three sequential function calls: the choice of what to
-    render is not something an LLM decides and could forget to act on
-    — it's a fixed function of what came back. Same principle as the
-    reference Supervisor's own "rendering is code, not a tool" — there
-    is no render tool here for a model to remember to call, because the
-    decision needs no judgment at all, only the data's own shape.
-
-    graph takes priority over chart if a turn somehow produced both —
-    a network worth drawing is rarely also best read as a table.
+    graph wins over chart when a turn produced both: a network worth
+    drawing is rarely also best read as a table.
     """
-    shapes = {result.get("result_shape") for result in
-             state.get("captured_results", {}).values()}
-    if "graph" in shapes:
-        target = "graph"
-    elif "table" in shapes:
-        target = "chart"
-    else:
-        target = "none"
+    shapes = {r.get("result_shape") for r in state.get("captured_results", {}).values()}
+    target = "graph" if "graph" in shapes else "chart" if "table" in shapes else "none"
     return {"render_target": target}
 
 
-async def _compose(state: GraphState) -> dict:
-    """PROBABILISTIC node, deliberately separate from _route.
+# Bounds on what the composer sees. Enough to state real findings; small
+# enough that it cannot retype a whole result, and the full result is shown
+# to the analyst beside the answer anyway.
+_ROWS, _NODES, _PASSAGES, _PASSAGE_CHARS = 10, 15, 6, 1200
 
-    Cannot be folded into the same model call that produces
-    SupervisorDecision: structured output and token-by-token streaming
-    are mutually exclusive modes for a single LLM call, same constraint
-    the reference Supervisor documents for its own compose() step. This
-    composer gets a bounded view of what each specialist actually
-    returned — not the full captured_results, and never anything beyond
-    what's already in state — so it can state real findings without
-    retyping raw data it was never given in the first place.
+
+def _node_name(node: dict) -> str:
+    props = node.get("properties", {})
+    return str(props.get("name") or props.get("briefTitle") or props.get("facility")
+               or props.get("nctId") or props.get("term") or node.get("element_id", "?"))
+
+
+def evidence(captured_results: dict) -> str:
+    """What the composer reads: bounded, verbatim, fenced.
+
+    An earlier version gave the composer only summarize_call() — counts like
+    "3 passage(s)". It could not state a single finding; the best it could
+    write was that a query had returned something. The model that ROUTES
+    still sees only summaries. The model that WRITES must see the evidence
+    it is writing about, or its answer has nothing in it.
     """
-    model = ChatBedrockConverse(
-        model=CFG.model_id,
-        guardrail_config={"guardrailIdentifier": CFG.guardrail_id,
-                          "guardrailVersion": CFG.guardrail_version},
-    )
-    summaries = [_summarize_call(name, result)
-                for name, result in state.get("captured_results", {}).items()]
-    prompt = (f"Question: {state['question']}\n\n"
-             f"What was found:\n" + "\n".join(summaries) + "\n\n"
-             "Write a brief, direct answer for the analyst, grounded only "
-             "in what was found above. If nothing usable was found, say so "
-             "plainly rather than hedging.")
-    response = await model.ainvoke([HumanMessage(content=prompt)])
+    blocks = []
+    for name, result in captured_results.items():
+        shape = result.get("result_shape", "unknown")
+        lines = [f"[{name}] result_shape={shape}"]
+        if result.get("result_note"):
+            lines.append(f"note: {_clean(result['result_note'])}")
+        if shape == "table":
+            rows = result.get("rows", [])
+            lines.append("columns: " + ", ".join(map(str, result.get("columns", []))))
+            lines += ["  " + " | ".join(_clean(v) for v in row) for row in rows[:_ROWS]]
+            if len(rows) > _ROWS:
+                lines.append(f"  ... {len(rows) - _ROWS} more rows shown to the analyst "
+                             "in the table, not here")
+        elif shape == "graph":
+            nodes = result.get("nodes", [])
+            lines.append(f"{len(nodes)} nodes, {len(result.get('relationships', []))} relationships")
+            lines += [f"  ({'/'.join(n.get('labels', []))}) {_clean(_node_name(n))}"
+                      for n in nodes[:_NODES]]
+        elif shape == "passages":
+            for p in result.get("passages", [])[:_PASSAGES]:
+                text = str(p.get("text", "")).replace("<untrusted_data>", "") \
+                                             .replace("</untrusted_data>", "")
+                lines.append(f"  doc={p.get('doc_id')} page={p.get('page')} "
+                             f"headings={p.get('headings')}")
+                lines.append("  " + text[:_PASSAGE_CHARS]
+                             + ("…" if len(text) > _PASSAGE_CHARS else ""))
+        blocks.append("\n".join(lines))
+    body = "\n\n".join(blocks) or "nothing was retrieved"
+    return f"<untrusted_data>\n{body}\n</untrusted_data>"
+
+
+async def _compose(state: GraphState) -> dict:
+    """PROBABILISTIC, deliberately separate from _route: structured output
+    and token-by-token streaming are mutually exclusive in one call.
+
+    STEP 1  render the managed compose prompt with the bounded evidence
+    STEP 2  write the answer
+    STEP 3  OUTPUT guardrail on the answer — this is the text the analyst
+            reads, and it is produced outside the agent loop, so the
+            loop's middleware never sees it
+    """
+    from .config import render
+    s = settings()
+    prompt = render(s.compose_template, {
+        "question": state["question"],
+        "evidence": evidence(state.get("captured_results", {}))})
+    response = await s.chat_model().ainvoke([HumanMessage(content=prompt)])
     text = response.content if isinstance(response.content, str) else str(response.content)
+    await asyncio.to_thread(check, text, "OUTPUT", s.guardrail_id, s.guardrail_version)
     return {"composed_answer": text}
 
 
 def build_graph():
-    """The explicit graph this whole file is organized around:
-
-        route (probabilistic: the model decides, via call_agent)
-            |
-            v
-        render_decision (deterministic: plain code on result_shape)
-            |
-            v
-        compose (probabilistic: a separate model call writes the prose)
-
-    Contrast with build_react_agent() above, whose own internal loop
-    (model -> tool -> model -> ... -> structured decision) is ALSO a
-    graph, just one LangChain's create_agent() builds and hides behind
-    a single .ainvoke() call. Nesting it as this outer graph's "route"
-    node keeps its already-tested middleware stack intact rather than
-    re-implementing tool-calling and structured output by hand — the
-    new, visible structure is the outer three-node shape, not a
-    replacement for the inner one.
-    """
     graph = StateGraph(GraphState)
     graph.add_node("route", _route)
     graph.add_node("render_decision", _render_decision)
@@ -427,14 +420,20 @@ def build_graph():
     return graph.compile()
 
 
-async def orchestrate(question: str) -> SupervisorResponse:
-    graph = build_graph()
-    state = await graph.ainvoke({"question": question})
-
+async def orchestrate(question: str, context_id: str | None = None) -> SupervisorResponse:
+    """A guardrail intervention anywhere — the question, a model turn, the
+    composed answer — ends the turn with the guardrail's own message."""
+    CONVERSATION.set(context_id)
+    try:
+        state = await build_graph().ainvoke({"question": question})
+    except GuardrailBlocked as blocked:
+        return SupervisorResponse(
+            decision=SupervisorDecision(answerable=False,
+                                        note=f"Blocked by guardrail ({blocked.source})."),
+            composed_answer=blocked.message, render_target="none")
     return SupervisorResponse(
         calls=[AgentCall(**c) for c in state.get("agent_calls", [])],
         decision=state["decision"],
         render_target=state.get("render_target", "none"),
         composed_answer=state.get("composed_answer", ""),
-        usage=state.get("usage"),
-    )
+        usage=state.get("usage"))

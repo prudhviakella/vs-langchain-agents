@@ -29,7 +29,7 @@ class SupervisorExecutor(AgentExecutor):
         log.info("received question (context_id=%s)", context.context_id)
 
         try:
-            response: SupervisorResponse = await orchestrate(question)
+            response: SupervisorResponse = await orchestrate(question, context.context_id)
         except Exception as exc:
             log.exception("orchestrate() failed")
             await event_queue.enqueue_event(_text_message(
@@ -55,4 +55,14 @@ def _text_message(text: str, context_id: str) -> Message:
 
 
 if __name__ == "__main__":
+    # STEP 3a — load settings BEFORE serving. A missing parameter, unset
+    # secret or unrendered prompt variable then fails the container start,
+    # which AgentCore reports in /aws/bedrock-agentcore/runtimes/, instead of
+    # failing the first analyst's question with what looks like a model error.
+    from supervisor.config import settings
+    loaded = settings()
+    log.info("settings loaded: model=%s prompt_version=%s guardrail=%s@%s",
+             loaded.openai_model, loaded.prompt_version,
+             loaded.guardrail_id, loaded.guardrail_version)
+    # STEP 3b — serve. No explicit port: the A2A contract's fixed 9000.
     serve_a2a(SupervisorExecutor())

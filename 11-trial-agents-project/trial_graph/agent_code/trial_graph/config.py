@@ -1,36 +1,144 @@
-"""trial_graph configuration — read once from environment variables set
-by the AgentCore Runtime deployment (config.yaml / tfvars), not
-hardcoded, so dev/tst/val/prd can each point at their own Gateway and
-Guardrail without a code change.
+"""trial_graph configuration — loaded once, at container start, from AWS.
+
+    env PARAM_PREFIX = /trial-agents/trial_graph          the only env var read here
+        │
+        ├─ Parameter Store    GetParametersByPath(prefix)     every plain setting
+        ├─ Secrets Manager    <openai_secret_id>             {"api_key", "model"}
+        └─ Prompt Management  <prompt_id> @ <prompt_version>  the system prompt
+
+WHY THREE SOURCES
+
+    Parameter Store     settings an operator changes without a rebuild
+    Secrets Manager     the one credential: rotated and audited, never an
+                        environment variable (visible to anyone who can
+                        describe the runtime)
+    Prompt Management   the prompt is versioned. The version is PINNED in
+                        Parameter Store, so editing the prompt changes nothing
+                        in production until prompt_version is bumped — and
+                        rolling back is changing one number.
+
+FAIL AT START, NOT AT THE FIRST QUESTION
+
+A missing parameter, an unset secret, or an unrendered {{variable}} raises
+here, while the container starts. AgentCore then reports the start failure
+in /aws/bedrock-agentcore/runtimes/. Failing on the first analyst question
+instead would look like a model error.
+
+WHAT THIS DOES NOT DO
+
+    It does not reload. Settings are read once per container; a change takes
+    effect on the next cold start or redeploy.
 """
+from __future__ import annotations
+
+import json
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
+
+REQUIRED = ('openai_secret_id', 'prompt_id', 'prompt_version', 'guardrail_id', 'guardrail_version', 'gateway_url', 'row_cap', 'graph_node_cap', 'max_repairs',)
 
 
 @dataclass(frozen=True)
-class Config:
-    gateway_url: str
-    aws_region: str
+class Settings:
+    region: str
+    openai_api_key: str = field(repr=False)
+    openai_model: str
+    system_prompt: str
+    prompt_version: str
     guardrail_id: str
     guardrail_version: str
-    model_id: str
+    gateway_url: str
     row_cap: int
     graph_node_cap: int
-    k_entity: int
+    max_repairs: int
+
+    def chat_model(self):
+        """The OpenAI chat model. Temperature is left at the provider default:
+        reasoning models reject a temperature argument outright."""
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model=self.openai_model, api_key=self.openai_api_key,
+                          timeout=120, max_retries=2)
 
 
-def _load() -> Config:
-    return Config(
-        gateway_url=os.environ["GATEWAY_URL"],
-        aws_region=os.environ.get("AWS_REGION", "us-east-1"),
-        guardrail_id=os.environ["GUARDRAIL_ID"],
-        guardrail_version=os.environ.get("GUARDRAIL_VERSION", "DRAFT"),
-        model_id=os.environ.get(
-            "MODEL_ID", "us.anthropic.claude-sonnet-4-6-20251001-v1:0"),
-        row_cap=int(os.environ.get("ROW_CAP", "500")),
-        graph_node_cap=int(os.environ.get("GRAPH_NODE_CAP", "500")),
-        k_entity=int(os.environ.get("K_ENTITY", "10")),
-    )
+def _parameters(ssm, path: str) -> dict[str, str]:
+    """Every parameter under `path`, keyed by the name after the path."""
+    found, token = {}, None
+    while True:
+        page = ssm.get_parameters_by_path(Path=path, Recursive=True,
+                                          **({"NextToken": token} if token else {}))
+        for p in page["Parameters"]:
+            found[p["Name"][len(path):].lstrip("/")] = p["Value"]
+        token = page.get("NextToken")
+        if not token:
+            return found
 
 
-CFG = _load()
+def _prompt(agent_client, prompt_id: str, version: str) -> str:
+    response = agent_client.get_prompt(promptIdentifier=prompt_id, promptVersion=version)
+    variants = response["variants"]
+    variant = next((v for v in variants if v["name"] == response.get("defaultVariant")),
+                   variants[0])
+    return variant["templateConfiguration"]["text"]["text"]
+
+
+def render(template: str, variables: dict[str, str]) -> str:
+    """Fill {{name}} variables. A variable left unfilled is an error, not text
+    the model reads literally."""
+    text = template
+    for name, value in variables.items():
+        text = text.replace("{{" + name + "}}", value)
+    left = sorted(set(re.findall(r"{{\s*(\w+)\s*}}", text)))
+    if left:
+        raise RuntimeError(f"system prompt has unrendered variables: {left}")
+    return text
+
+
+def load(env=os.environ, session=None) -> Settings:
+    import boto3
+    session = session or boto3.Session()
+    region = env.get("AWS_REGION") or session.region_name or "us-east-1"
+    prefix = env["PARAM_PREFIX"].rstrip("/")
+
+    # STEP 1 — plain settings
+    params = _parameters(session.client("ssm", region_name=region), prefix)
+    missing = [k for k in REQUIRED if k not in params]
+    if missing:
+        raise RuntimeError(f"missing parameters under {prefix}: {missing}")
+
+    # STEP 2 — the credential
+    secret = json.loads(session.client("secretsmanager", region_name=region)
+                        .get_secret_value(SecretId=params["openai_secret_id"])["SecretString"])
+    unset = [k for k in ("api_key", "model") if secret.get(k, "replace-me") == "replace-me"]
+    if unset:
+        raise RuntimeError(f"{params['openai_secret_id']} still holds placeholder {unset}")
+
+    # STEP 3 — the prompt, at its pinned version
+    template = _prompt(session.client("bedrock-agent", region_name=region),
+                       params["prompt_id"], params["prompt_version"])
+
+    return Settings(
+        region=region, openai_api_key=secret["api_key"], openai_model=secret["model"],
+        system_prompt=render(template, {}),
+        prompt_version=params["prompt_version"],
+        guardrail_id=params["guardrail_id"], guardrail_version=params["guardrail_version"],
+        gateway_url=params["gateway_url"], row_cap=int(params["row_cap"]),
+        graph_node_cap=int(params["graph_node_cap"]),
+        max_repairs=int(params["max_repairs"]),)
+
+
+_current: Settings | None = None
+
+
+def settings() -> Settings:
+    """The loaded settings; loaded on first use."""
+    global _current
+    if _current is None:
+        _current = load()
+    return _current
+
+
+def use(value: Settings) -> None:
+    """Install settings directly — tests, and nothing else."""
+    global _current
+    _current = value

@@ -189,7 +189,7 @@ def expand_neighbors(args: dict) -> dict:
 
     # STEP 1 — neighbour ids and sizes from the graph, one query
     with _get_driver().session() as session:
-        rows = [dict(r) for r in session.run(_NEIGHBOURS % window, id=chunk_id)]
+        rows = [dict(r) for r in session.run(_NEIGHBOURS % window, parameters={"id": chunk_id})]
     if not rows:
         return {"error": True, "detail": f"chunk_id {chunk_id!r} is not in the graph"}
 
@@ -281,6 +281,8 @@ def lambda_handler(event, context):
 
     log.info("dispatching to %s", matched)
     try:
-        return _TOOLS[matched](event)
+        result = _TOOLS[matched](event)
     except KeyError as exc:
         return {"error": True, "detail": f"missing required argument: {exc}"}
+    # The Lambda runtime serializes with plain json.dumps. Guarantee it can.
+    return json.loads(json.dumps(result, default=str))

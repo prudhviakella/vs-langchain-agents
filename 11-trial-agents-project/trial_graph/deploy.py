@@ -1,143 +1,126 @@
 #!/usr/bin/env python3
-"""One-click setup for trial_graph's AgentCore Gateway infrastructure.
+"""One-click setup for trial_graph.
 
     python deploy.py
 
-    IAM roles                                                    (STEP 1)
-        |
-        v
-    Neo4j credential secret (created once, "replace-me" until you        (STEP 2)
-    set it for real — same pattern as the RAG pipeline's own deploy.py)
-        |
-        v
-    tools Lambda (zipped with the neo4j driver, deployed)                (STEP 3)
-        |
-        v
-    AgentCore Gateway + Lambda target (MCP-exposes the three tools)      (STEP 4)
-        |
-        v
-    Bedrock Guardrail                                                    (STEP 5)
-        |
-        v
-    ECR repo + build/push linux/arm64 image + AgentCore Runtime          (STEP 6)
-    (the agent's own compute — separate IAM role from the Gateway/
-    Lambda above, since it's a different trust boundary)
-        |
-        v
-    writes gateway_config.json — read by anything that needs to call     (STEP 7)
-    this agent (the Supervisor) or configure it further
+    STEP 1   secrets      trial-graph/neo4j, trial-agents/openai (placeholders if new)
+    STEP 2   Lambda role  read the Neo4j secret
+    STEP 3   Lambda       find_entity_by_name, validate_cypher, execute_cypher
+    STEP 4   Gateway      AWS_IAM (SigV4); target created or updated
+    STEP 5   guardrail    shared; a new version only if the policy changed
+    STEP 6   prompt       prompts/system.md -> Prompt Management; version only on change
+    STEP 7   parameters   /trial-agents/trial_graph/*
+    STEP 8   runtime      role, linux/arm64 image, AgentCore Runtime
+    STEP 9   registry     /trial-agents/registry/trial_graph = {arn, description}
+    STEP 10  Neo4j index  the fulltext index find_entity_by_name queries
+    STEP 11  deployment.json
 
-Every step is idempotent, exactly like the RAG pipeline's own deploy.py:
-re-running this after a partial failure resumes rather than duplicating
-anything, since every create_* call here checks for an existing resource
-by name first.
+The runtime's only environment variable is PARAM_PREFIX. Everything else it
+reads from AWS at start (see agent_code/trial_graph/config.py), so changing
+a limit, the prompt version or the model name needs no rebuild — only a new
+container, which the next cold start provides.
+
+DEPLOY ORDER:  trial_graph -> trial_search -> supervisor
 
 WHAT THIS DOES NOT DO
 
-    - It does not build the Docker image without docker/buildx already
-      logged into ECR — run `aws ecr get-login-password | docker login`
-      once per session before running this, same as any other buildx
-      push workflow.
-    - It does not set real Neo4j credentials. Run
-      scripts/set_neo4j_secret.py afterward with the real URI/password —
-      the Lambda will raise a clear connection error until you do,
-      rather than silently succeed against nothing.
+    It does not set real credentials, and it does not log in to ECR:
+      aws ecr get-login-password | docker login --username AWS \\
+          --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
 """
 import json
 from pathlib import Path
 
 import boto3
 
-from infra import gateway, guardrail, iam, lambda_deploy, runtime_deploy, runtime_iam
+from infra import (config_store, gateway, guardrail, iam, lambda_deploy, prompts,
+                   runtime_deploy, runtime_iam)
 
-OUTPUT_PATH = Path(__file__).parent / "gateway_config.json"
-SECRET_NAME = "trial-graph/neo4j"
-MODEL_ID = "us.anthropic.claude-sonnet-4-6-20251001-v1:0"
-
-
-def ensure_secret() -> str:
-    """Create the Neo4j credential secret if it doesn't exist yet, as a
-    clearly-fake placeholder — same "replace-me" pattern as the RAG
-    pipeline's own deploy.py, so a forgotten setup step fails loudly at
-    connection time instead of silently succeeding against nothing.
-    """
-    client = boto3.client("secretsmanager")
-    try:
-        secret = client.describe_secret(SecretId=SECRET_NAME)
-        return secret["ARN"]
-    except client.exceptions.ResourceNotFoundException:
-        pass
-
-    print(f"  creating placeholder secret {SECRET_NAME!r}")
-    response = client.create_secret(
-        Name=SECRET_NAME,
-        SecretString=json.dumps({"uri": "replace-me", "user": "neo4j",
-                                 "password": "replace-me"}),
-    )
-    return response["ARN"]
+AGENT = "trial_graph"
+HERE = Path(__file__).parent
+NEO4J_SECRET = "trial-graph/neo4j"
+DESCRIPTION = ("Relationships and registry facts about the 20 trials: sponsors, CROs, "
+               "sites and countries, phase and status, conditions, listed outcomes and "
+               "registry eligibility fields. Answers by traversing a Neo4j graph and can "
+               "return a trial's nctId and its protocol's docId. Holds no protocol text "
+               "and no drug or intervention data.")
+LIMITS = {"row_cap": 500, "graph_node_cap": 500, "max_repairs": 3}
 
 
 def main() -> None:
-    print("=== STEP 1: IAM roles ===")
-    secret_arn_prefix = f"arn:aws:secretsmanager:*:*:secret:{SECRET_NAME}"
-    lambda_role_arn = iam.lambda_role(secret_arn_prefix)
+    prefix = config_store.prefix(AGENT)
 
-    print("\n=== STEP 2: Neo4j credential secret ===")
-    secret_arn = ensure_secret()
-    iam.tighten_secret_policy(secret_arn)
+    print("=== STEP 1: secrets ===")
+    neo4j_arn = config_store.ensure_secret(
+        NEO4J_SECRET, {"uri": "replace-me", "user": "neo4j", "password": "replace-me"})
+    openai_arn = config_store.ensure_openai_secret()
+
+    print("\n=== STEP 2: Lambda role ===")
+    lambda_role_arn = iam.lambda_role(f"arn:aws:secretsmanager:*:*:secret:{NEO4J_SECRET}")
+    iam.tighten_secret_policy(neo4j_arn)
 
     print("\n=== STEP 3: tools Lambda ===")
-    lambda_arn = lambda_deploy.deploy(lambda_role_arn, SECRET_NAME)
+    lambda_arn = lambda_deploy.deploy(lambda_role_arn, NEO4J_SECRET)
 
-    print("\n=== STEP 4: AgentCore Gateway + Lambda target ===")
-    gateway_role_arn = iam.gateway_role(lambda_arn)
-    gw = gateway.create_gateway(gateway_role_arn)
-    # After create_gateway, not before: the resource policy's SourceArn is
-    # the gateway's own arn, which does not exist until it is created.
+    print("\n=== STEP 4: Gateway ===")
+    gw = gateway.create_gateway(iam.gateway_role(lambda_arn))
+    # After create_gateway: the permission's SourceArn is the gateway's own arn.
     lambda_deploy.allow_gateway_invoke(lambda_deploy.FUNCTION_NAME, gw["gatewayArn"])
     gateway.create_lambda_target(gw["gatewayId"], lambda_arn)
 
-    print("\n=== STEP 5: Bedrock Guardrail ===")
-    gr = guardrail.create_guardrail()
+    print("\n=== STEP 5: guardrail ===")
+    gr = guardrail.ensure_guardrail()
 
-    print("\n=== STEP 6: ECR + build/push + AgentCore Runtime ===")
+    print("\n=== STEP 6: prompt ===")
+    prompt = prompts.publish("trial-graph-system", HERE / "prompts" / "system.md",
+                             "trial_graph system prompt")
+
+    print("\n=== STEP 7: parameters ===")
+    config_store.put_parameters(prefix, {
+        "gateway_url": gw["gatewayUrl"], **LIMITS,
+        "guardrail_id": gr["id"], "guardrail_version": gr["version"],
+        "prompt_id": prompt["id"], "prompt_version": prompt["version"],
+        "openai_secret_id": config_store.OPENAI_SECRET})
+
+    print("\n=== STEP 8: runtime ===")
     repo_uri, repo_arn = runtime_deploy.ensure_ecr_repo()
-    runtime_role_arn = runtime_iam.runtime_role(
-        gateway_arn=gw["gatewayArn"], ecr_repo_arn=repo_arn,
-        model_id=MODEL_ID, guardrail_arn=gr["guardrailArn"])
-    dockerfile_dir = str(Path(__file__).parent / "agent_code")
-    image_uri = runtime_deploy.build_and_push(repo_uri, dockerfile_dir)
-    env_vars = {
-        "GATEWAY_URL": gw["gatewayUrl"],
-        "AWS_REGION": boto3.Session().region_name or "us-east-1",
-        "GUARDRAIL_ID": gr["guardrailId"],
-        "GUARDRAIL_VERSION": gr["version"],
-        "MODEL_ID": MODEL_ID,
-    }
-    runtime_arn = runtime_deploy.deploy_runtime(image_uri, runtime_role_arn, env_vars)
+    role_arn = runtime_iam.runtime_role(
+        gateway_arn=gw["gatewayArn"], ecr_repo_arn=repo_arn, guardrail_arn=gr["arn"],
+        prompt_arns=[prompt["arn"]], secret_arn=openai_arn, param_prefix=prefix)
+    image_uri = runtime_deploy.build_and_push(repo_uri, str(HERE / "agent_code"))
+    runtime_arn = runtime_deploy.deploy_runtime(image_uri, role_arn, {
+        "PARAM_PREFIX": prefix,
+        "AWS_REGION": boto3.Session().region_name or "us-east-1"})
 
-    print("\n=== STEP 7: writing gateway_config.json ===")
-    config = {
-        "gateway_url": gw["gatewayUrl"],
-        "gateway_id": gw["gatewayId"],
-        "gateway_arn": gw["gatewayArn"],
-        "guardrail_id": gr["guardrailId"],
-        "guardrail_arn": gr["guardrailArn"],
-        "guardrail_version": gr["version"],
-        "neo4j_secret_name": SECRET_NAME,
-        "runtime_arn": runtime_arn,
-        "model_id": MODEL_ID,
-    }
-    OUTPUT_PATH.write_text(json.dumps(config, indent=2))
-    print(f"  wrote {OUTPUT_PATH}")
+    print("\n=== STEP 9: registry ===")
+    config_store.register(AGENT, runtime_arn, DESCRIPTION)
 
-    print("\ndone.")
-    if json.loads(boto3.client("secretsmanager").get_secret_value(
-            SecretId=SECRET_NAME)["SecretString"])["uri"] == "replace-me":
-        print("\nREMINDER: the Neo4j secret is still a placeholder. Run:")
-        print(f"  aws secretsmanager put-secret-value --secret-id {SECRET_NAME} "
-             '--secret-string \'{"uri":"neo4j+s://...","user":"neo4j",'
-             '"password":"..."}\'')
+    print("\n=== STEP 10: Neo4j fulltext index ===")
+    if config_store.placeholders(NEO4J_SECRET):
+        print("  skipped — the Neo4j secret is still a placeholder. After setting it:")
+        print("    python setup_neo4j.py")
+    else:
+        import setup_neo4j   # needs the neo4j driver only when it actually runs
+        setup_neo4j.ensure_index()
+
+    print("\n=== STEP 11: deployment.json ===")
+    (HERE / "deployment.json").write_text(json.dumps({
+        "runtime_arn": runtime_arn, "param_prefix": prefix,
+        "gateway_url": gw["gatewayUrl"], "gateway_arn": gw["gatewayArn"],
+        "guardrail": gr, "prompt": prompt, "limits": LIMITS}, indent=2))
+
+    _remind(NEO4J_SECRET, config_store.OPENAI_SECRET)
+    print(f"\ndone. {AGENT} runtime: {runtime_arn}")
+
+
+def _remind(*secrets: str) -> None:
+    for name in secrets:
+        unset = config_store.placeholders(name)
+        if unset:
+            print(f"\nREMINDER: {name} still has placeholder {unset}. The agent refuses "
+                  "to start until they are set:")
+            print(f"  aws secretsmanager put-secret-value --secret-id {name} "
+                  "--secret-string '{...}'")
 
 
 if __name__ == "__main__":

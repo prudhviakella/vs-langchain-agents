@@ -1,79 +1,118 @@
-"""Create the Bedrock Guardrail applied to trial_graph's model calls.
+"""The Bedrock guardrail all three agents apply, through ApplyGuardrail.
 
-    deploy.py
-        |
-        v
-    infra/guardrail.py
-        |
-        `-- create_guardrail()   content filters + PII handling, wired
-                                 into ChatBedrockConverse's own
-                                 guardrail_config at the agent's model
-                                 call (core.py) — this script only
-                                 creates the guardrail resource itself
+    ensure_guardrail()
+        │
+        ├─ create it, or bring its DRAFT to the policy below
+        └─ a numbered version, created only when the policy changed
+                │
+                v
+        (id, arn, version) -> each agent's Parameter Store settings
 
-WHAT THIS GUARDS AGAINST, AND WHY THESE SPECIFIC CHOICES
+ONE GUARDRAIL, NOT ONE PER AGENT
 
-This agent answers questions about clinical trial documents — sponsors,
-drugs, sites, outcomes. It has no legitimate reason to discuss anything
-sexual, violent, or hateful, so those filters are set to their strongest
-setting with no real cost to normal use.
+The policy is the same for every agent. Three copies drift the first time
+one is edited.
 
-PII is handled differently on input vs output, deliberately. On input,
-an analyst's own question might reasonably mention a name in passing
-("did the Pfizer trial include children") — that's not sensitive data
-about a document, it's ordinary conversation, so input PII detection is
-left off. On output, the graph's own Site nodes carry real facility
-addresses and PatientPopulation nodes carry population descriptions —
-none of it is individual-patient PII (the graph has no patient-level
-data at all), so no PII policy is needed there either. The one real
-sensitive-data channel — the Neo4j credential itself — is handled by
-Secrets Manager (see infra/lambda_deploy.py), not by this guardrail;
-a guardrail filters model text, not infrastructure secrets.
+FILTER STRENGTHS ARE SET FOR CLINICAL TEXT
+
+A higher strength blocks on LOWER-confidence detections. Answers about
+trials legitimately mention deaths, overdoses, self-harm screening and
+adverse events; at HIGH, the VIOLENCE and MISCONDUCT filters would block
+answers restating a protocol's safety section. So those two are MEDIUM on
+input and LOW on output: an analyst's question is held to a stricter bar
+than the model's restatement of clinical evidence. SEXUAL and HATE have no
+legitimate use here and stay HIGH. This calibration is reasoned from the
+domain; verify it against real answers before relying on it.
+
+PROMPT_ATTACK
+
+Detects instructions smuggled into the analyst's input ("ignore your
+instructions and ..."). It applies to input only — outputStrength must be
+NONE — which is why the agents check the question with source=INPUT.
 
 WHAT THIS DOES NOT DO
 
-    - It does not configure a denied-topics list. This agent's scope is
-      already narrowed structurally — ScopeDisciplineMiddleware in
-      core.py (not yet built) is where "don't answer questions outside
-      the trial graph" belongs, since that is a judgment about the
-      QUESTION, which a keyword-based denied-topic filter cannot make
-      reliably. A guardrail is the wrong tool for that job.
+    No PII policy. The corpus holds no patient-level data. No denied topics:
+    whether a question is in scope is the prompt's job, not a keyword list's.
 """
+import time
+
 import boto3
 
-client = boto3.client("bedrock")
+bedrock = boto3.client("bedrock")
 
-GUARDRAIL_NAME = "trial-graph-guardrail"
+NAME = "trial-agents-guardrail"
+BLOCKED_INPUT = "This request falls outside what this assistant can help with."
+BLOCKED_OUTPUT = ("The answer to this question could not be shown because it did not "
+                  "pass a content policy. Try rephrasing the question.")
+FILTERS = [
+    {"type": "SEXUAL",        "inputStrength": "HIGH",   "outputStrength": "HIGH"},
+    {"type": "HATE",          "inputStrength": "HIGH",   "outputStrength": "HIGH"},
+    {"type": "INSULTS",       "inputStrength": "MEDIUM", "outputStrength": "MEDIUM"},
+    {"type": "VIOLENCE",      "inputStrength": "MEDIUM", "outputStrength": "LOW"},
+    {"type": "MISCONDUCT",    "inputStrength": "MEDIUM", "outputStrength": "LOW"},
+    {"type": "PROMPT_ATTACK", "inputStrength": "HIGH",   "outputStrength": "NONE"},
+]
 
 
-def create_guardrail() -> dict:
-    """Create the guardrail if it doesn't exist yet. Returns
-    {"guardrailId", "guardrailArn", "version"}.
-    """
-    existing = client.list_guardrails(maxResults=100).get("guardrails", [])
-    match = next((g for g in existing if g["name"] == GUARDRAIL_NAME), None)
-    if match:
-        print(f"  guardrail {GUARDRAIL_NAME!r} already exists")
-        return {"guardrailId": match["id"], "guardrailArn": match["arn"],
-                "version": match.get("version", "DRAFT")}
+def _policy(g: dict) -> tuple:
+    filters = {(f["type"], f["inputStrength"], f["outputStrength"])
+               for f in g.get("contentPolicy", {}).get("filters", [])}
+    return (frozenset(filters), g.get("blockedInputMessaging"), g.get("blockedOutputsMessaging"))
 
-    print(f"  creating guardrail {GUARDRAIL_NAME!r}")
-    response = client.create_guardrail(
-        name=GUARDRAIL_NAME,
-        description="Content guardrail for the trial_graph agent",
-        contentPolicyConfig={"filtersConfig": [
-            {"type": "SEXUAL", "inputStrength": "HIGH", "outputStrength": "HIGH"},
-            {"type": "VIOLENCE", "inputStrength": "HIGH", "outputStrength": "HIGH"},
-            {"type": "HATE", "inputStrength": "HIGH", "outputStrength": "HIGH"},
-            {"type": "INSULTS", "inputStrength": "MEDIUM", "outputStrength": "MEDIUM"},
-            {"type": "MISCONDUCT", "inputStrength": "HIGH", "outputStrength": "HIGH"},
-        ]},
-        blockedInputMessaging=(
-            "This request falls outside what this agent can help with."),
-        blockedOutputsMessaging=(
-            "I can't provide that response — let me know if you'd like to "
-            "rephrase your question about the trial data."),
-    )
-    return {"guardrailId": response["guardrailId"],
-            "guardrailArn": response["guardrailArn"],
-            "version": response.get("version", "DRAFT")}
+
+_DESIRED = (frozenset((f["type"], f["inputStrength"], f["outputStrength"]) for f in FILTERS),
+            BLOCKED_INPUT, BLOCKED_OUTPUT)
+
+
+def _wait(guardrail_id: str) -> None:
+    deadline = time.time() + 120
+    while (status := bedrock.get_guardrail(guardrailIdentifier=guardrail_id,
+                                           guardrailVersion="DRAFT")["status"]) != "READY":
+        if status == "FAILED" or time.time() > deadline:
+            raise RuntimeError(f"guardrail {NAME!r} is {status}")
+        time.sleep(3)
+
+
+def _find() -> dict | None:
+    token = None
+    while True:
+        page = bedrock.list_guardrails(maxResults=100, **({"nextToken": token} if token else {}))
+        match = next((g for g in page["guardrails"] if g["name"] == NAME), None)
+        if match or not page.get("nextToken"):
+            return match
+        token = page["nextToken"]
+
+
+def ensure_guardrail() -> dict:
+    config = dict(contentPolicyConfig={"filtersConfig": FILTERS},
+                  blockedInputMessaging=BLOCKED_INPUT, blockedOutputsMessaging=BLOCKED_OUTPUT)
+
+    # STEP 1 — the DRAFT matches the policy above
+    found = _find()
+    if found is None:
+        print(f"  creating guardrail {NAME!r}")
+        created = bedrock.create_guardrail(name=NAME, description="trial agents", **config)
+        guardrail_id, arn = created["guardrailId"], created["guardrailArn"]
+    else:
+        guardrail_id, arn = found["id"], found["arn"]
+        draft = bedrock.get_guardrail(guardrailIdentifier=guardrail_id, guardrailVersion="DRAFT")
+        if _policy(draft) != _DESIRED:
+            print(f"  updating guardrail {NAME!r} policy")
+            bedrock.update_guardrail(guardrailIdentifier=guardrail_id, name=NAME,
+                                     description="trial agents", **config)
+    _wait(guardrail_id)
+
+    # STEP 2 — reuse the latest numbered version if it already has this policy
+    versions = [g["version"] for g in bedrock.list_guardrails(
+        guardrailIdentifier=guardrail_id, maxResults=100)["guardrails"]
+        if g["version"].isdigit()]
+    if versions:
+        latest = max(versions, key=int)
+        if _policy(bedrock.get_guardrail(guardrailIdentifier=guardrail_id,
+                                         guardrailVersion=latest)) == _DESIRED:
+            print(f"  guardrail {NAME!r} unchanged — version {latest}")
+            return {"id": guardrail_id, "arn": arn, "version": latest}
+    version = bedrock.create_guardrail_version(guardrailIdentifier=guardrail_id)["version"]
+    print(f"  guardrail {NAME!r} -> version {version}")
+    return {"id": guardrail_id, "arn": arn, "version": version}
