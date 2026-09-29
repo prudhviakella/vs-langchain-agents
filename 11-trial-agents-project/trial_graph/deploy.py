@@ -1,138 +1,837 @@
 #!/usr/bin/env python3
-"""One-click setup for trial_graph.
+
+"""One-click deployment/setup script for trial_graph.
+
+Run:
 
     python deploy.py
 
-    STEP 1   secrets      trial-graph/neo4j, trial-agents/openai (placeholders if new)
-    STEP 2   Lambda role  read the Neo4j secret
-    STEP 3   Lambda       find_entity_by_name, validate_cypher, execute_cypher
-    STEP 4   Gateway      AWS_IAM (SigV4); target created or updated
-    STEP 5   guardrail    shared; a new version only if the policy changed
-    STEP 6   prompt       prompts/system.md -> Prompt Management; version only on change
-    STEP 7   parameters   /trial-agents/trial_graph/*
-    STEP 8   runtime      role, linux/arm64 image, AgentCore Runtime
-    STEP 9   registry     /trial-agents/registry/trial_graph = {arn, description}
-    STEP 10  Neo4j index  the fulltext index find_entity_by_name queries
+
+DEPLOYMENT FLOW
+---------------
+
+This script provisions the infrastructure required by the trial_graph agent.
+
+The deployment is intentionally performed in a specific order because
+later resources depend on resources created earlier.
+
+    STEP 1   Secrets
+             |
+             ├── Neo4j secret
+             └── OpenAI secret
+             |
+    STEP 2   Lambda IAM role
+             |
+    STEP 3   Tools Lambda
+             |
+    STEP 4   AgentCore Gateway
+             |
+    STEP 5   Bedrock Guardrail
+             |
+    STEP 6   Prompt Management
+             |
+    STEP 7   Parameter Store
+             |
+    STEP 8   AgentCore Runtime
+             |
+    STEP 9   Agent registry
+             |
+    STEP 10  Neo4j full-text index
+             |
     STEP 11  deployment.json
 
-The runtime's only environment variable is PARAM_PREFIX. Everything else it
-reads from AWS at start (see agent_code/trial_graph/config.py), so changing
-a limit, the prompt version or the model name needs no rebuild — only a new
-container, which the next cold start provides.
 
-Before STEP 1, CloudWatch Transaction Search is enabled if it is not already —
-without it, no agent's spans appear in CloudWatch (infra/observability.py).
+WHAT GETS CREATED
+-----------------
 
-DEPLOY ORDER:  trial_graph -> trial_search -> supervisor
+The final architecture looks approximately like this:
 
-WHAT THIS DOES NOT DO
+    ┌────────────────────────────────────────────────────────────┐
+    │ AgentCore Runtime                                         │
+    │                                                            │
+    │ trial_graph container                                     │
+    │                                                            │
+    │ reads PARAM_PREFIX only                                   │
+    └──────────────────────┬─────────────────────────────────────┘
+                           │
+                           │ MCP / SigV4
+                           ▼
+    ┌────────────────────────────────────────────────────────────┐
+    │ AgentCore Gateway                                         │
+    └──────────────────────┬─────────────────────────────────────┘
+                           │
+                           │ Lambda invocation
+                           ▼
+    ┌────────────────────────────────────────────────────────────┐
+    │ Tools Lambda                                              │
+    │                                                            │
+    │ find_entity_by_name                                       │
+    │ validate_cypher                                           │
+    │ execute_cypher                                            │
+    └──────────────────────┬─────────────────────────────────────┘
+                           │
+                           ▼
+                         Neo4j
 
-    It does not set real credentials. It does not grant permissions or install
-    Docker — infra/preflight.py checks both first and stops, naming what is
-    missing, before anything is created. It logs in to ECR by itself.
+
+CONFIGURATION
+-------------
+
+The runtime itself receives only:
+
+    PARAM_PREFIX
+
+Everything else is loaded by agent_code/trial_graph/config.py from:
+
+    Parameter Store
+    Secrets Manager
+    Bedrock Prompt Management
+
+This means changing:
+
+    - row limits
+    - graph limits
+    - repair count
+    - prompt version
+    - model name
+
+does not require rebuilding the source code.
+
+The new configuration is picked up when a new runtime container starts.
+
+
+DEPLOYMENT ORDER
+----------------
+
+The intended overall deployment order for the complete Trial Agents
+system is:
+
+    trial_graph
+        ↓
+    trial_search
+        ↓
+    supervisor
+
+The supervisor depends on the specialist agents being available.
+
+
+OBSERVABILITY
+-------------
+
+CloudWatch Transaction Search is enabled before deploying the agent.
+
+This is account-level infrastructure and only needs to be enabled once.
+
+Without it, the OpenTelemetry/AgentCore traces generated by the agents
+will not appear correctly in CloudWatch Transaction Search.
+
+
+PREFLIGHT
+---------
+
+Before making changes, infra/preflight.py checks prerequisites.
+
+This script does NOT:
+
+    - create real credentials
+    - install Docker
+    - magically configure missing AWS permissions
+
+Instead, preflight stops early and reports missing prerequisites.
+
+The deployment code also performs the ECR login as part of the image
+build/push process.
 """
+
+
+# ---------------------------------------------------------------------------
+# Standard library imports
+# ---------------------------------------------------------------------------
+
+# Used to create deployment.json at the end of the deployment.
 import json
+
+# Path gives us reliable filesystem paths relative to this deploy.py file.
 from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# AWS SDK
+# ---------------------------------------------------------------------------
 
 import boto3
 
-from infra import (preflight, observability, config_store, gateway, guardrail, iam, lambda_deploy, prompts,
-                   runtime_deploy, runtime_iam)
 
+# ---------------------------------------------------------------------------
+# Internal infrastructure modules
+# ---------------------------------------------------------------------------
+
+# Each module owns one infrastructure responsibility.
+#
+# Keeping these operations separated makes deploy.py an orchestration
+# script rather than a large collection of AWS API calls.
+from infra import (
+    preflight,
+    observability,
+    config_store,
+    gateway,
+    guardrail,
+    iam,
+    lambda_deploy,
+    prompts,
+    runtime_deploy,
+    runtime_iam,
+)
+
+
+# ===========================================================================
+# Deployment constants
+# ===========================================================================
+
+# Logical name of this specialist agent.
+#
+# This value is reused for:
+#
+#     - Parameter Store prefix
+#     - agent registry
+#     - runtime naming
 AGENT = "trial_graph"
-HERE = Path(__file__).parent
-NEO4J_SECRET = "trial-graph/neo4j"
-DESCRIPTION = ("Registry facts and relationships for the 20 trials, from a Neo4j graph: "
-               "lead sponsor and collaborators, sites (facility, city) and countries, "
-               "phase, status, dates, enrollment, conditions, primary and secondary "
-               "outcomes, the registry's eligibility text and age limits, and which "
-               "trials the registry indexes under a MeSH term (the only drug-name "
-               "lookup; no arms or doses). Also each protocol's structure: its docId, "
-               "sections in order, pages, and table and figure counts. Finds trials by "
-               "these facts ('Novo Nordisk's trials', 'sites in Korea'). Holds no "
-               "protocol passage text.")
-LIMITS = {"row_cap": 500, "graph_node_cap": 500, "max_repairs": 3}
 
+
+# Directory containing this deployment script.
+#
+# Used later to locate:
+#
+#     prompts/system.md
+#     agent_code/
+#     deployment.json
+HERE = Path(
+    __file__
+).parent
+
+
+# Name of the Neo4j secret in Secrets Manager.
+#
+# The actual Neo4j credentials are NOT stored in this script.
+NEO4J_SECRET = "trial-graph/neo4j"
+
+
+# ---------------------------------------------------------------------------
+# Agent registry description
+# ---------------------------------------------------------------------------
+
+# Human-readable description stored in the specialist-agent registry.
+#
+# The supervisor can use this description when deciding whether
+# trial_graph is appropriate for a particular question.
+#
+# IMPORTANT:
+#
+# This description intentionally describes what the graph contains
+# and what it does NOT contain.
+#
+# For example:
+#
+#     trial_graph has:
+#         trial metadata
+#         sponsors
+#         sites
+#         protocol structure
+#
+#     trial_graph does NOT have:
+#         protocol passage text
+#         arms/doses
+#
+# This prevents the supervisor from routing questions requiring
+# unsupported data to this specialist.
+DESCRIPTION = (
+    "Registry facts and relationships for the 20 trials, from a Neo4j graph: "
+    "lead sponsor and collaborators, sites (facility, city) and countries, "
+    "phase, status, dates, enrollment, conditions, primary and secondary "
+    "outcomes, the registry's eligibility text and age limits, and which "
+    "trials the registry indexes under a MeSH term (the only drug-name "
+    "lookup; no arms or doses). Also each protocol's structure: its docId, "
+    "sections in order, pages, and table and figure counts. Finds trials by "
+    "these facts ('Novo Nordisk's trials', 'sites in Korea'). Holds no "
+    "protocol passage text."
+)
+
+
+# ---------------------------------------------------------------------------
+# Runtime safety/behavior limits
+# ---------------------------------------------------------------------------
+
+# These values become Parameter Store configuration.
+#
+# They are later consumed by trial_graph/config.py and ultimately by
+# CypherMiddleware.
+#
+# row_cap:
+#     Maximum number of table rows captured.
+#
+# graph_node_cap:
+#     Maximum number of graph nodes captured.
+#
+# max_repairs:
+#     Maximum number of Cypher repair attempts.
+LIMITS = {
+    "row_cap": 500,
+    "graph_node_cap": 500,
+    "max_repairs": 3,
+}
+
+
+# ===========================================================================
+# Main deployment workflow
+# ===========================================================================
 
 def main() -> None:
-    preflight.run(needs_gateway=True)
-    prefix = config_store.prefix(AGENT)
+    """Provision and deploy the trial_graph agent.
 
-    print("=== observability: CloudWatch Transaction Search (once per account) ===")
+    The function intentionally follows the numbered deployment sequence.
+
+    Each step creates or updates one layer of the architecture and
+    supplies information required by subsequent steps.
+    """
+
+    # =======================================================================
+    # Preflight
+    # =======================================================================
+
+    # Validate local/AWS prerequisites before creating anything.
+    #
+    # needs_gateway=True means this deployment requires the infrastructure
+    # necessary to create/configure the AgentCore Gateway.
+    #
+    # If a prerequisite is missing, preflight.run() should stop here.
+    preflight.run(
+        needs_gateway=True
+    )
+
+    # Build the Parameter Store prefix for this agent.
+    #
+    # Expected value:
+    #
+    #     /trial-agents/trial_graph
+    prefix = config_store.prefix(
+        AGENT
+    )
+
+
+    # =======================================================================
+    # Observability
+    # =======================================================================
+
+    print(
+        "=== observability: CloudWatch Transaction Search (once per account) ==="
+    )
+
+    # Enable CloudWatch Transaction Search if it has not already been
+    # enabled for the AWS account.
+    #
+    # This must happen before agent deployment if we want the runtime
+    # traces/spans to be available in CloudWatch Transaction Search.
     observability.ensure_transaction_search()
 
-    print("=== STEP 1: secrets ===")
+
+    # =======================================================================
+    # STEP 1 — Secrets
+    # =======================================================================
+
+    print(
+        "=== STEP 1: secrets ==="
+    )
+
+    # Create the Neo4j secret if it doesn't already exist.
+    #
+    # New environments receive placeholder values:
+    #
+    #     uri      = replace-me
+    #     user     = neo4j
+    #     password = replace-me
+    #
+    # The actual credentials are expected to be populated separately.
+    #
+    # The function returns the ARN of the secret.
     neo4j_arn = config_store.ensure_secret(
-        NEO4J_SECRET, {"uri": "replace-me", "user": "neo4j", "password": "replace-me"})
+        NEO4J_SECRET,
+        {
+            "uri": "replace-me",
+            "user": "neo4j",
+            "password": "replace-me",
+        },
+    )
+
+    # Ensure the OpenAI secret exists.
+    #
+    # The actual API key/model are stored in Secrets Manager rather than
+    # being embedded in the container or environment variables.
     openai_arn = config_store.ensure_openai_secret()
 
-    print("\n=== STEP 2: Lambda role ===")
-    lambda_role_arn = iam.lambda_role(f"arn:aws:secretsmanager:*:*:secret:{NEO4J_SECRET}")
-    iam.tighten_secret_policy(neo4j_arn)
 
-    print("\n=== STEP 3: tools Lambda ===")
-    lambda_arn = lambda_deploy.deploy(lambda_role_arn, NEO4J_SECRET)
+    # =======================================================================
+    # STEP 2 — Lambda IAM role
+    # =======================================================================
 
-    print("\n=== STEP 4: Gateway ===")
-    gw = gateway.create_gateway(iam.gateway_role(lambda_arn))
-    # After create_gateway: the permission's SourceArn is the gateway's own arn.
-    lambda_deploy.allow_gateway_invoke(lambda_deploy.FUNCTION_NAME, gw["gatewayArn"])
-    gateway.create_lambda_target(gw["gatewayId"], lambda_arn)
+    print(
+        "\n=== STEP 2: Lambda role ==="
+    )
 
-    print("\n=== STEP 5: guardrail ===")
+    # Create/get the IAM role used by the tools Lambda.
+    #
+    # The role is granted access to the Neo4j secret.
+    #
+    # The wildcard ARN pattern is used because Secrets Manager secret
+    # ARNs can contain AWS-generated suffixes.
+    lambda_role_arn = iam.lambda_role(
+        f"arn:aws:secretsmanager:*:*:secret:{NEO4J_SECRET}"
+    )
+
+    # Tighten the secret policy after the role exists.
+    #
+    # This reduces the secret-access scope to the intended Lambda role
+    # instead of leaving broader access in place.
+    iam.tighten_secret_policy(
+        neo4j_arn
+    )
+
+
+    # =======================================================================
+    # STEP 3 — Tools Lambda
+    # =======================================================================
+
+    print(
+        "\n=== STEP 3: tools Lambda ==="
+    )
+
+    # Deploy/update the Lambda containing the three Neo4j tools:
+    #
+    #     find_entity_by_name
+    #     validate_cypher
+    #     execute_cypher
+    #
+    # The Lambda receives its Neo4j credentials from Secrets Manager.
+    lambda_arn = lambda_deploy.deploy(
+        lambda_role_arn,
+        NEO4J_SECRET,
+    )
+
+
+    # =======================================================================
+    # STEP 4 — AgentCore Gateway
+    # =======================================================================
+
+    print(
+        "\n=== STEP 4: Gateway ==="
+    )
+
+    # Create or retrieve the AgentCore Gateway.
+    #
+    # The Gateway receives an IAM role that allows it to invoke the
+    # tools Lambda.
+    gw = gateway.create_gateway(
+        iam.gateway_role(
+            lambda_arn
+        )
+    )
+
+    # -----------------------------------------------------------------------
+    # Allow Gateway -> Lambda invocation
+    # -----------------------------------------------------------------------
+
+    # Lambda resource-based permissions must allow the specific Gateway
+    # to invoke the function.
+    #
+    # SourceArn is the Gateway ARN.
+    #
+    # This is separate from the Gateway's own IAM role.
+    lambda_deploy.allow_gateway_invoke(
+        lambda_deploy.FUNCTION_NAME,
+        gw["gatewayArn"],
+    )
+
+    # -----------------------------------------------------------------------
+    # Register Lambda as a Gateway target
+    # -----------------------------------------------------------------------
+
+    # Tell the Gateway that this Lambda implements the MCP tools.
+    #
+    # The Gateway will expose those tools to the trial_graph agent.
+    gateway.create_lambda_target(
+        gw["gatewayId"],
+        lambda_arn,
+    )
+
+
+    # =======================================================================
+    # STEP 5 — Guardrail
+    # =======================================================================
+
+    print(
+        "\n=== STEP 5: guardrail ==="
+    )
+
+    # Create or retrieve the shared Bedrock Guardrail.
+    #
+    # The helper should create a new version only when the underlying
+    # guardrail policy actually changed.
+    #
+    # The returned object contains:
+    #
+    #     id
+    #     version
+    #     arn
     gr = guardrail.ensure_guardrail()
 
-    print("\n=== STEP 6: prompt ===")
-    prompt = prompts.publish("trial-graph-system", HERE / "prompts" / "system.md",
-                             "trial_graph system prompt")
 
-    print("\n=== STEP 7: parameters ===")
-    config_store.put_parameters(prefix, {
-        "gateway_url": gw["gatewayUrl"], **LIMITS,
-        "guardrail_id": gr["id"], "guardrail_version": gr["version"],
-        "prompt_id": prompt["id"], "prompt_version": prompt["version"],
-        "openai_secret_id": config_store.OPENAI_SECRET})
+    # =======================================================================
+    # STEP 6 — System prompt
+    # =======================================================================
 
-    print("\n=== STEP 8: runtime ===")
+    print(
+        "\n=== STEP 6: prompt ==="
+    )
+
+    # Publish the trial_graph system prompt to Bedrock Prompt Management.
+    #
+    # Source file:
+    #
+    #     prompts/system.md
+    #
+    # The prompt helper should create a new Prompt Management version
+    # only when the content changes.
+    prompt = prompts.publish(
+        "trial-graph-system",
+        HERE / "prompts" / "system.md",
+        "trial_graph system prompt",
+    )
+
+
+    # =======================================================================
+    # STEP 7 — Parameter Store
+    # =======================================================================
+
+    print(
+        "\n=== STEP 7: parameters ==="
+    )
+
+    # Store the runtime configuration under:
+    #
+    #     /trial-agents/trial_graph/*
+    #
+    # Notice that sensitive OpenAI credentials are NOT placed here.
+    #
+    # Parameter Store contains only the OpenAI secret ID.
+    #
+    # The runtime later loads these values through config.py.
+    config_store.put_parameters(
+        prefix,
+        {
+            # AgentCore Gateway endpoint used by the MCP client.
+            "gateway_url": gw[
+                "gatewayUrl"
+            ],
+
+            # Safety/operational limits.
+            **LIMITS,
+
+            # Guardrail identity/version.
+            "guardrail_id": gr[
+                "id"
+            ],
+            "guardrail_version": gr[
+                "version"
+            ],
+
+            # Prompt identity/version.
+            "prompt_id": prompt[
+                "id"
+            ],
+            "prompt_version": prompt[
+                "version"
+            ],
+
+            # OpenAI secret reference.
+            #
+            # The secret value itself remains in Secrets Manager.
+            "openai_secret_id": config_store.OPENAI_SECRET,
+        },
+    )
+
+
+    # =======================================================================
+    # STEP 8 — AgentCore Runtime
+    # =======================================================================
+
+    print(
+        "\n=== STEP 8: runtime ==="
+    )
+
+    # Ensure the ECR repository exists.
+    #
+    # The agent runtime will execute the Docker image stored here.
     repo_uri, repo_arn = runtime_deploy.ensure_ecr_repo()
+
+    # -----------------------------------------------------------------------
+    # Runtime IAM role
+    # -----------------------------------------------------------------------
+
+    # Create/get the IAM role used by the AgentCore Runtime container.
+    #
+    # The runtime needs access to:
+    #
+    #     - AgentCore Gateway
+    #     - ECR image
+    #     - Guardrail
+    #     - Prompt Management
+    #     - OpenAI secret
+    #     - Parameter Store configuration
+    #
+    # Notice that this is different from the Lambda IAM role.
     role_arn = runtime_iam.runtime_role(
-        gateway_arn=gw["gatewayArn"], ecr_repo_arn=repo_arn, guardrail_arn=gr["arn"],
-        prompt_arns=[prompt["arn"]], secret_arn=openai_arn, param_prefix=prefix)
-    image_uri = runtime_deploy.build_and_push(repo_uri, str(HERE / "agent_code"))
-    runtime_arn = runtime_deploy.deploy_runtime(image_uri, role_arn, {
-        "PARAM_PREFIX": prefix,
-        "AWS_REGION": boto3.Session().region_name or "us-east-1"})
+        gateway_arn=gw[
+            "gatewayArn"
+        ],
+        ecr_repo_arn=repo_arn,
+        guardrail_arn=gr[
+            "arn"
+        ],
+        prompt_arns=[
+            prompt["arn"]
+        ],
+        secret_arn=openai_arn,
+        param_prefix=prefix,
+    )
 
-    print("\n=== STEP 9: registry ===")
-    config_store.register(AGENT, runtime_arn, DESCRIPTION)
+    # -----------------------------------------------------------------------
+    # Build and push Docker image
+    # -----------------------------------------------------------------------
 
-    print("\n=== STEP 10: Neo4j fulltext index ===")
-    if config_store.placeholders(NEO4J_SECRET):
-        print("  skipped — the Neo4j secret is still a placeholder. After setting it:")
-        print("    python setup_neo4j.py")
+    # Build the trial_graph AgentCore Runtime image from:
+    #
+    #     agent_code/
+    #
+    # The resulting image is pushed to the ECR repository.
+    image_uri = runtime_deploy.build_and_push(
+        repo_uri,
+        str(
+            HERE / "agent_code"
+        ),
+    )
+
+    # -----------------------------------------------------------------------
+    # Deploy/update AgentCore Runtime
+    # -----------------------------------------------------------------------
+
+    # Deploy the image to AgentCore Runtime.
+    #
+    # The runtime receives only PARAM_PREFIX and AWS_REGION as environment
+    # variables.
+    #
+    # All other configuration is loaded from AWS when the container starts.
+    runtime_arn = runtime_deploy.deploy_runtime(
+        image_uri,
+        role_arn,
+        {
+            "PARAM_PREFIX": prefix,
+            "AWS_REGION": (
+                boto3.Session().region_name
+                or "us-east-1"
+            ),
+        },
+    )
+
+
+    # =======================================================================
+    # STEP 9 — Specialist registry
+    # =======================================================================
+
+    print(
+        "\n=== STEP 9: registry ==="
+    )
+
+    # Register the deployed specialist agent.
+    #
+    # The supervisor can later discover/use this registry entry to invoke
+    # trial_graph.
+    #
+    # The registry stores:
+    #
+    #     agent name
+    #     runtime ARN
+    #     description
+    config_store.register(
+        AGENT,
+        runtime_arn,
+        DESCRIPTION,
+    )
+
+
+    # =======================================================================
+    # STEP 10 — Neo4j full-text index
+    # =======================================================================
+
+    print(
+        "\n=== STEP 10: Neo4j fulltext index ==="
+    )
+
+    # Check whether the Neo4j secret still contains placeholder values.
+    #
+    # A brand-new environment intentionally starts with:
+    #
+    #     uri      = replace-me
+    #     password = replace-me
+    #
+    # In that case we cannot connect to Neo4j yet.
+    if config_store.placeholders(
+        NEO4J_SECRET
+    ):
+
+        print(
+            "  skipped — the Neo4j secret is still a placeholder. "
+            "After setting it:"
+        )
+
+        print(
+            "    python setup_neo4j.py"
+        )
+
     else:
-        import setup_neo4j   # needs the neo4j driver only when it actually runs
+
+        # Import setup_neo4j only when we actually need to connect to
+        # Neo4j.
+        #
+        # This keeps the deployment script from requiring the Neo4j
+        # driver merely to deploy AWS infrastructure.
+        import setup_neo4j
+
+        # Create/ensure the full-text index used by:
+        #
+        #     find_entity_by_name()
+        #
+        # This is the index:
+        #
+        #     trial_entity_names
         setup_neo4j.ensure_index()
 
-    print("\n=== STEP 11: deployment.json ===")
-    (HERE / "deployment.json").write_text(json.dumps({
-        "runtime_arn": runtime_arn, "param_prefix": prefix,
-        "gateway_url": gw["gatewayUrl"], "gateway_arn": gw["gatewayArn"],
-        "guardrail": gr, "prompt": prompt, "limits": LIMITS}, indent=2))
 
-    _remind(NEO4J_SECRET, config_store.OPENAI_SECRET)
-    print(f"\ndone. {AGENT} runtime: {runtime_arn}")
+    # =======================================================================
+    # STEP 11 — deployment.json
+    # =======================================================================
+
+    print(
+        "\n=== STEP 11: deployment.json ==="
+    )
+
+    # Persist the important deployment outputs locally.
+    #
+    # This provides a convenient record of what was deployed and which
+    # resource identifiers were produced.
+    #
+    # Example information:
+    #
+    #     runtime ARN
+    #     Parameter Store prefix
+    #     Gateway URL
+    #     Gateway ARN
+    #     Guardrail configuration
+    #     Prompt configuration
+    #     Runtime limits
+    (HERE / "deployment.json").write_text(
+        json.dumps(
+            {
+                "runtime_arn": runtime_arn,
+                "param_prefix": prefix,
+                "gateway_url": gw[
+                    "gatewayUrl"
+                ],
+                "gateway_arn": gw[
+                    "gatewayArn"
+                ],
+                "guardrail": gr,
+                "prompt": prompt,
+                "limits": LIMITS,
+            },
+            indent=2,
+        )
+    )
 
 
-def _remind(*secrets: str) -> None:
+    # =======================================================================
+    # Final credential reminder
+    # =======================================================================
+
+    # Check whether either secret still contains placeholder values.
+    #
+    # This is especially useful for a first-time deployment where the
+    # infrastructure can be deployed before the actual credentials
+    # are available.
+    _remind(
+        NEO4J_SECRET,
+        config_store.OPENAI_SECRET,
+    )
+
+    # Print the final runtime identifier.
+    print(
+        f"\ndone. {AGENT} runtime: {runtime_arn}"
+    )
+
+
+# ===========================================================================
+# Placeholder reminder
+# ===========================================================================
+
+def _remind(
+    *secrets: str,
+) -> None:
+    """Print reminders for secrets that still contain placeholders.
+
+    This function does NOT modify the secrets.
+
+    It only tells the operator which secrets still need real values.
+
+    This is useful because deployment can intentionally proceed with
+    placeholder secrets, while the runtime itself refuses to start
+    until the required credentials have been configured.
+    """
+
+    # Check every supplied secret.
     for name in secrets:
-        unset = config_store.placeholders(name)
+
+        # Determine which required fields are still placeholders.
+        unset = config_store.placeholders(
+            name
+        )
+
+        # Only print a reminder when something is still unset.
         if unset:
-            print(f"\nREMINDER: {name} still has placeholder {unset}. The agent refuses "
-                  "to start until they are set:")
-            print(f"  aws secretsmanager put-secret-value --secret-id {name} "
-                  "--secret-string '{...}'")
+
+            print(
+                f"\nREMINDER: {name} still has placeholder {unset}. "
+                "The agent refuses to start until they are set:"
+            )
+
+            # Provide the operator with the AWS CLI command pattern.
+            #
+            # The actual secret value is intentionally not printed.
+            print(
+                f"  aws secretsmanager put-secret-value "
+                f"--secret-id {name} "
+                "--secret-string '{...}'"
+            )
 
 
+# ===========================================================================
+# Script entry point
+# ===========================================================================
+
+# This ensures main() runs only when:
+#
+#     python deploy.py
+#
+# is executed directly.
+#
+# Importing deploy.py from another Python module will NOT automatically
+# execute the deployment.
 if __name__ == "__main__":
     main()
