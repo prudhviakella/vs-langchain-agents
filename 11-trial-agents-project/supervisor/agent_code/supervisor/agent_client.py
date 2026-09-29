@@ -47,10 +47,9 @@ corpus has no per-user access control (every chunk's access = public).
 WHAT THIS DOES NOT DO
 
     It does not export spans. It carries the CURRENT trace context to the
-    specialist: invoke_agent_runtime has first-class traceParent / traceState
-    / baggage parameters (they become the traceparent / tracestate / baggage
-    headers), and nothing fills them unless this call does. The specialist's
-    main.py attaches that context, so its spans join this trace.
+    specialist inside the A2A message metadata; the specialist's main.py
+    attaches it, so its spans join this trace. Not through
+    invoke_agent_runtime's traceParent parameter — see call_specialist.
 
     It does not retry. A failed specialist call raises AgentCallError; the
     call_agent tool turns that into a result the model can act on.
@@ -91,14 +90,16 @@ def session_id(conversation_id: str | None, agent_name: str) -> str:
     return sid[:256]
 
 
-def build_a2a_envelope(question: str, context_id: str) -> bytes:
-    return json.dumps({
-        "jsonrpc": "2.0", "id": str(uuid.uuid4()), "method": "message/send",
-        "params": {"message": {
-            "role": "user", "messageId": f"msg-{uuid.uuid4().hex}",
-            "parts": [{"kind": "text", "text": question}],
-            "contextId": context_id}},
-    }).encode()
+def build_a2a_envelope(question: str, context_id: str, trace: dict | None = None) -> bytes:
+    """The A2A message/send request. `trace` — the W3C traceparent /
+    tracestate / baggage of the calling span — rides in the message's own
+    metadata, which the specialist's executor reads (see its main.py)."""
+    message = {"role": "user", "messageId": f"msg-{uuid.uuid4().hex}",
+               "parts": [{"kind": "text", "text": question}], "contextId": context_id}
+    if trace:
+        message["metadata"] = dict(trace)
+    return json.dumps({"jsonrpc": "2.0", "id": str(uuid.uuid4()),
+                       "method": "message/send", "params": {"message": message}}).encode()
 
 
 def _extract_text(parts: list) -> str:
@@ -150,17 +151,20 @@ def parse_a2a_response(raw: bytes) -> dict:
 def call_specialist(agent_runtime_arn: str, agent_name: str, question: str,
                     conversation_id: str | None) -> dict:
     context_id = conversation_id or str(uuid.uuid4())
-    # W3C trace context of the CURRENT span -> the API's own trace parameters.
-    trace = inject_trace_headers()
-    trace_kwargs = {param: trace[header] for header, param in
-                    (("traceparent", "traceParent"), ("tracestate", "traceState"),
-                     ("baggage", "baggage")) if trace.get(header)}
+    # Trace context goes in the MESSAGE, never in invoke_agent_runtime's
+    # traceParent / traceState / baggage parameters. Those become SigV4-SIGNED
+    # headers (botocore exempts only x-amzn-trace-id from signing, because
+    # tracing infrastructure rewrites trace headers in transit). Passing them
+    # made every specialist call fail in AWS with "The request signature we
+    # calculated does not match the signature you provided", while every other
+    # AWS call from the same container succeeded. The request body is signed
+    # too, but nothing on the path rewrites it.
     try:
         response = _get_client().invoke_agent_runtime(
             agentRuntimeArn=agent_runtime_arn, qualifier="DEFAULT",
             runtimeSessionId=session_id(context_id, agent_name),
             contentType="application/json", accept="application/json",
-            payload=build_a2a_envelope(question, context_id), **trace_kwargs)
+            payload=build_a2a_envelope(question, context_id, inject_trace_headers()))
         raw = response["response"].read()
     except Exception as exc:
         raise AgentCallError(f"failed to invoke {agent_name}: {exc}") from exc

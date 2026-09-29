@@ -52,8 +52,8 @@ from bedrock_agentcore.runtime.context import BedrockAgentCoreContext  # noqa: E
 
 from trial_search.core import orchestrate                           # noqa: E402
 from trial_search.schemas import TrialSearchResponse                       # noqa: E402
-from trial_search.tracing import (attach_context, detach_context,   # noqa: E402
-                               extract_parent_context, set_span_attrs, shutdown, span)
+from trial_search.tracing import (agent_span, attach_context, detach_context,   # noqa: E402
+                               extract_parent_context, set_span_attrs, shutdown)
 
 # force=True: uvicorn installs its own handlers first, and a plain
 # basicConfig() is then a silent no-op — every log.info() discarded.
@@ -68,12 +68,17 @@ class TrialSearchExecutor(AgentExecutor):
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         question = context.get_user_input()
-        # Join the caller's trace. None when there is no inbound traceparent —
-        # the request then starts a trace of its own.
-        token = attach_context(extract_parent_context(
-            BedrockAgentCoreContext.get_request_headers()))
+        # Join the caller's trace: the traceparent header if the caller sent
+        # one, else the A2A message metadata — where the supervisor puts it,
+        # because signed trace HEADERS broke SigV4 (see agent_client.py).
+        # None when neither exists; the request then starts its own trace.
+        metadata = getattr(getattr(context, "message", None), "metadata", None) or {}
+        token = attach_context(
+            extract_parent_context(BedrockAgentCoreContext.get_request_headers())
+            or extract_parent_context(metadata))
         try:
-            with span("trial_search.request", context_id=context.context_id,
+            with agent_span("trial_search", conversation_id=context.context_id,
+                            context_id=context.context_id,
                       session_id=BedrockAgentCoreContext.get_session_id(),
                       question_chars=len(question or "")) as sp:
                 log.info("received question (context_id=%s)", context.context_id)

@@ -42,11 +42,15 @@ from infra import (preflight, observability, config_store, gateway, guardrail, i
 AGENT = "trial_graph"
 HERE = Path(__file__).parent
 NEO4J_SECRET = "trial-graph/neo4j"
-DESCRIPTION = ("Relationships and registry facts about the 20 trials: sponsors, CROs, "
-               "sites and countries, phase and status, conditions, listed outcomes and "
-               "registry eligibility fields. Answers by traversing a Neo4j graph and can "
-               "return a trial's nctId and its protocol's docId. Holds no protocol text "
-               "and no drug or intervention data.")
+DESCRIPTION = ("Registry facts and relationships for the 20 trials, from a Neo4j graph: "
+               "lead sponsor and collaborators, sites (facility, city) and countries, "
+               "phase, status, dates, enrollment, conditions, primary and secondary "
+               "outcomes, the registry's eligibility text and age limits, and which "
+               "trials the registry indexes under a MeSH term (the only drug-name "
+               "lookup; no arms or doses). Also each protocol's structure: its docId, "
+               "sections in order, pages, and table and figure counts. Finds trials by "
+               "these facts ('Novo Nordisk's trials', 'sites in Korea'). Holds no "
+               "protocol passage text.")
 LIMITS = {"row_cap": 500, "graph_node_cap": 500, "max_repairs": 3}
 
 

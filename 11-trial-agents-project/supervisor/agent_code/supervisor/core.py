@@ -64,8 +64,21 @@ FIVE FACTS VERIFIED AT RUNTIME, NOT ASSUMED
 WHY DATA STILL NEVER FLOWS THROUGH THE MODEL
 
 call_agent's result is a specialist's full response — graph nodes,
-passages, rows. The model sees a compact summary; the full response goes
-to state for compose() and the final response to read directly.
+passages, rows. The routing model sees a compact summary; the full response
+goes to state for compose() and the final response to read directly.
+
+The summary carries VALUES only for small results (up to 5 rows or nodes),
+because a resolution step exists to hand an identifier — a docId — to the
+next call. Hiding it cost a second round trip in production.
+
+WHAT THE COMPOSER READS, AND WHAT IS SHOWN
+
+    evidence()          passages chosen by re-ranker score within a
+                        character budget, duplicates dropped, then shown in
+                        reading order — not the first N in reading order
+    _render_decision()  a table or graph a LATER call consumed (its values
+                        reappear in that call's question) was a step, not
+                        the answer, and is not rendered
 """
 from __future__ import annotations
 
@@ -73,13 +86,14 @@ import asyncio
 import contextvars
 import logging
 import operator
+import re
 from typing import Annotated, Any, TypedDict
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import tool
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
@@ -88,7 +102,10 @@ from . import agent_client
 from .config import settings
 from .guardrail import GuardrailBlocked, GuardrailMiddleware, check
 from .tracing import set_span_attrs, span
-from .schemas import (AgentCall, SupervisorDecision, SupervisorResponse,
+from .memory import TOOL_NAMES as MEMORY_TOOL_NAMES
+from .memory import TOOLS as MEMORY_TOOLS
+from .memory import USER
+from .schemas import (AgentCall, SupervisorDecision, SupervisorResponse, ToolCall,
                       collect_usage)
 
 log = logging.getLogger("agent.supervisor.core")
@@ -115,22 +132,44 @@ def _clean(value) -> str:
     return text[:300] + "…" if len(text) > 300 else text
 
 
+# How much of a result the ROUTING model sees. Row counts and column names
+# alone hid the one thing a resolution call exists to return: the docId the
+# NEXT call needs. In production the supervisor then re-asked trial_graph to
+# "state the docId in your note" — a second round trip (~18 s) for a value
+# it already had. Small results now show their values; large ones stay
+# summarized, because the routing model needs identifiers, not the data.
+_SUMMARY_ROWS, _SUMMARY_COLS, _SUMMARY_NODES, _SUMMARY_VALUE_CHARS = 5, 6, 5, 80
+
+
+def _short(value) -> str:
+    text = _clean(value)
+    return text[:_SUMMARY_VALUE_CHARS] + "…" if len(text) > _SUMMARY_VALUE_CHARS else text
+
+
 def summarize_call(agent_name: str, result: dict) -> str:
-    """Compact view of a specialist's response — never the full data."""
+    """What the ROUTING model reads after a call: the shape, and — for small
+    results — the identifying values, fenced as untrusted data."""
     shape = result.get("result_shape", "unknown")
     parts = [f"{agent_name} returned result_shape={shape!r}"]
+    values = []
     if shape == "graph":
-        parts.append(f"{len(result.get('nodes', []))} nodes, "
-                     f"{len(result.get('relationships', []))} relationships")
+        nodes = result.get("nodes", [])
+        parts.append(f"{len(nodes)} nodes, {len(result.get('relationships', []))} relationships")
+        values = [_short(_node_label(n)) for n in nodes[:_SUMMARY_NODES]]
     elif shape == "table":
-        parts.append(f"{len(result.get('rows', []))} rows, "
-                     f"columns: {', '.join(str(c) for c in result.get('columns', [])[:8])}")
+        rows, columns = result.get("rows", []), result.get("columns", [])
+        parts.append(f"{len(rows)} rows, columns: "
+                     + ", ".join(str(c) for c in columns[:8]))
+        if len(rows) <= _SUMMARY_ROWS:
+            values = [" | ".join(_short(v) for v in row[:_SUMMARY_COLS]) for row in rows]
     elif shape == "passages":
         parts.append(f"{len(result.get('passages', []))} passage(s)")
     else:
         parts.append("no usable result. Do not retry the same question with the "
                      "same agent — ask the other agent, ask a narrower question, "
                      "or report the gap honestly.")
+    if values:
+        parts.append("values: <untrusted_data>" + " ; ".join(values) + "</untrusted_data>")
     if result.get("result_note"):
         parts.append(f"note: {_clean(result['result_note'])}")
     return " — ".join(parts)
@@ -167,7 +206,9 @@ def call_agent(agent_name: str, question: str, rationale: str,
 
     # The span is current while the specialist is invoked, so the traceparent
     # agent_client sends makes the specialist's spans children of THIS one.
-    with span("supervisor.call_agent", agent=agent_name) as sp:
+    # Named per target so the trace tree shows WHICH agent was called; the
+    # callee's own root span, "invoke_agent <agent>", nests beneath it.
+    with span(f"call_agent {agent_name}", agent=agent_name) as sp:
         try:
             result = agent_client.call_specialist(
                 specialists[agent_name]["arn"], agent_name, question, CONVERSATION.get())
@@ -207,6 +248,9 @@ class SupervisorState(AgentState):
     call_count: Annotated[int, operator.add]
     agent_calls: Annotated[list[dict], operator.add]
     captured_results: Annotated[dict, _merge]
+    memory_calls: Annotated[int, operator.add]
+    tool_calls: Annotated[list[dict], operator.add]
+    history_turns: int
 
 
 # ── middleware ──────────────────────────────────────────────────────────
@@ -232,6 +276,36 @@ class AgentCallBudgetMiddleware(AgentMiddleware):
                         f"turn (limit {self.limit}). Produce "
                         "your decision from what you have, or set "
                         "answerable=false if nothing usable came back.")
+        return request
+
+    def wrap_tool_call(self, request, handler):
+        gated = self._gate(request)
+        return gated if isinstance(gated, ToolMessage) else handler(gated)
+
+    async def awrap_tool_call(self, request, handler):
+        gated = self._gate(request)
+        return gated if isinstance(gated, ToolMessage) else await handler(gated)
+
+
+class MemoryBudgetMiddleware(AgentMiddleware):
+    """Caps memory tool calls per turn. Each is an embedding call plus a
+    vector query; a model unsure what to recall must not loop on it."""
+
+    state_schema = SupervisorState
+
+    def __init__(self, cfg=None):
+        super().__init__()
+        self.limit = (cfg or settings()).max_memory_calls_per_turn
+
+    def _gate(self, request):
+        if request.tool_call["name"] not in MEMORY_TOOL_NAMES:
+            return request
+        used = (request.state or {}).get("memory_calls", 0)
+        if used >= self.limit:
+            return ToolMessage(
+                tool_call_id=request.tool_call["id"],
+                content=f"REFUSED: {used} memory calls already made this turn "
+                        f"(limit {self.limit}). Continue with what you have.")
         return request
 
     def wrap_tool_call(self, request, handler):
@@ -270,16 +344,23 @@ class RequireAgentCallMiddleware(AgentMiddleware):
         args = decision.get("args", {})
         if not args.get("answerable", True) or args.get("clarifying_question"):
             return None                      # an honest refusal is not hollow
-        if (request.state or {}).get("call_count", 0) > 0:
+        state = request.state or {}
+        if state.get("call_count", 0) > 0:
             return None                      # a specialist really was called
+        if state.get("memory_calls", 0) > 0:
+            return None                      # memory was read or written — grounded
+        if args.get("from_conversation") and state.get("history_turns", 0) > 0:
+            return None                      # answered from turns it was actually shown
         return decision
 
     def _retry(self, request):
         log.warning("hollow SupervisorDecision — retrying once")
         return request.override(messages=request.messages + [HumanMessage(
-            content="You have not called any specialist yet. Call call_agent "
-                    "before producing a decision — there is no way to answer "
-                    "without checking trial_graph or trial_search first.")])
+            content="You have not called any specialist or memory tool yet. "
+                    "Call call_agent (or a memory tool, for questions about "
+                    "the user or past work) before producing a decision. Set "
+                    "from_conversation=true only if the earlier turns shown "
+                    "to you already contain the whole answer.")])
 
     def wrap_model_call(self, request, handler):
         response = handler(request)
@@ -301,45 +382,103 @@ def build_react_agent(model=None, cfg=None):
     The guardrail is first, so its INPUT check runs before anything else."""
     s = cfg or settings()
     return create_agent(
-        model=model or s.chat_model(), tools=[call_agent], system_prompt=s.system_prompt,
+        name="supervisor_route",
+        model=model or s.chat_model(), tools=[call_agent, *MEMORY_TOOLS],
+        system_prompt=s.system_prompt,
         response_format=ToolStrategy(SupervisorDecision),
         middleware=[GuardrailMiddleware(s.guardrail_id, s.guardrail_version,
                                         decision_tool=DECISION_TOOL),
-                    AgentCallBudgetMiddleware(s), RequireAgentCallMiddleware()])
+                    AgentCallBudgetMiddleware(s), MemoryBudgetMiddleware(s),
+                    RequireAgentCallMiddleware()])
 
 
 class GraphState(TypedDict, total=False):
     question: str
+    history: list[dict]         # [{"role": "user"|"assistant", "text": ...}], oldest first
     decision: SupervisorDecision
     agent_calls: list[dict]
+    tool_calls: list[dict]
     captured_results: dict[str, dict]
     usage: Any
     render_target: str
     composed_answer: str
 
 
+def history_messages(history: list[dict] | None, limit: int) -> list:
+    """Earlier turns as chat messages, oldest first, bounded.
+
+    The newest `limit` messages (10 interactions = 20 messages), each cut to
+    2,000 characters: enough to resolve "that trial" or "its sponsor",
+    without letting one long answer crowd out the rest. The current
+    question comes AFTER these, so the input guardrail — which checks the
+    last human message — still checks the question, not an old turn.
+    """
+    out = []
+    for turn in (history or [])[-limit:]:
+        text = str(turn.get("text", "")).strip()[:2000]
+        if not text:
+            continue
+        out.append(AIMessage(content=text) if turn.get("role") == "assistant"
+                   else HumanMessage(content=text))
+    return out
+
+
 async def _route(state: GraphState) -> dict:
     """PROBABILISTIC. Runs the inner agent and lifts what the rest of the
     graph needs into this graph's own state."""
-    with span("supervisor.route") as sp:
+    prior = history_messages(state.get("history"), settings().max_history_messages)
+    with span("supervisor.route", history_messages=len(prior)) as sp:
         result = await build_react_agent().ainvoke(
-            {"messages": [{"role": "user", "content": state["question"]}]})
+            {"messages": [*prior, HumanMessage(content=state["question"])],
+             "history_turns": len(prior)})
         set_span_attrs(sp, calls=result.get("call_count", 0),
+                       memory_calls=result.get("memory_calls", 0),
                        answerable=result["structured_response"].answerable)
     return {"decision": result["structured_response"],
             "agent_calls": result.get("agent_calls", []),
+            "tool_calls": result.get("tool_calls", []),
             "captured_results": result.get("captured_results", {}),
             "usage": collect_usage(result["messages"], settings().openai_model)}
 
 
-def _render_decision(state: GraphState) -> dict:
-    """DETERMINISTIC. A fixed rule over the shapes already in state.
+def _identifiers(result: dict) -> set[str]:
+    """Distinctive values in a table or graph result: the strings another
+    call would copy into its question (NCT numbers, docIds, names)."""
+    found = set()
+    for row in result.get("rows", []) or []:
+        found.update(str(v) for v in row if v is not None)
+    for node in result.get("nodes", []) or []:
+        props = node.get("properties", {})
+        found.update(str(props[k]) for k in ("nctId", "docId", "name", "acronym") if props.get(k))
+    return {v for v in found if len(v) >= 6}          # "PHASE3" and longer; not "1", "yes"
 
-    graph wins over chart when a turn produced both: a network worth
-    drawing is rarely also best read as a table.
+
+def _render_decision(state: GraphState) -> dict:
+    """DETERMINISTIC. What to show beside the answer, from the results that
+    ANSWERED — not from resolution steps.
+
+    A table or graph whose values reappear in a LATER call's question was a
+    stepping stone: "resolve IMbrave150" returned nctId + docId, and the
+    search question then carried that docId. Rendering it produced a chart
+    of one lookup row beside a protocol-text answer. A result nobody later
+    consumed is an answer in its own right ("Pfizer trials?" -> a table).
+
+    graph wins over chart when both answered: a network worth drawing is
+    rarely also best read as a table.
     """
-    shapes = {r.get("result_shape") for r in state.get("captured_results", {}).values()}
-    target = "graph" if "graph" in shapes else "chart" if "table" in shapes else "none"
+    calls = state.get("agent_calls", [])
+    answered = set()
+    for agent, result in state.get("captured_results", {}).items():
+        shape = result.get("result_shape")
+        if shape not in ("table", "graph"):
+            answered.add(shape)
+            continue
+        produced_at = max((i for i, c in enumerate(calls) if c.get("agent_name") == agent),
+                          default=-1)
+        later = " ".join(c.get("question", "") for c in calls[produced_at + 1:])
+        if not any(v in later for v in _identifiers(result)):
+            answered.add(shape)
+    target = "graph" if "graph" in answered else "chart" if "table" in answered else "none"
     with span("supervisor.render_decision", render_target=target):
         pass
     return {"render_target": target}
@@ -348,13 +487,77 @@ def _render_decision(state: GraphState) -> dict:
 # Bounds on what the composer sees. Enough to state real findings; small
 # enough that it cannot retype a whole result, and the full result is shown
 # to the analyst beside the answer anyway.
-_ROWS, _NODES, _PASSAGES, _PASSAGE_CHARS = 10, 15, 6, 1200
+#
+# Passages are bounded by CHARACTERS, not by count. A count of 6 × 1,200
+# chars, taken in reading order, once gave the composer three title pages
+# and three partial criteria while the complete exclusion list — ranked
+# highest by the re-ranker — sat unused further down the document.
+_ROWS, _NODES = 10, 15
+_EVIDENCE_CHARS = 20_000        # ≈ 5k tokens of passage text
+_PASSAGE_CHARS = 4_000          # one very long passage cannot fill the budget
+_NEIGHBOR_REACH = 3             # positions a neighbour may sit from its hit
+_DUPLICATE_OVERLAP = 0.8        # word-set overlap at which two passages repeat
 
 
-def _node_name(node: dict) -> str:
+def _node_label(node: dict) -> str:
+    """How a node is named in evidence. Trials carry their NCT number and
+    acronym beside the title — with the title alone, the composer could not
+    cite an identifier and said so ("No trial identifiers are shown")."""
     props = node.get("properties", {})
+    if "Trial" in node.get("labels", []):
+        parts = [props.get("nctId"), props.get("acronym"), props.get("briefTitle")]
+        return " — ".join(str(p) for p in parts if p) or node.get("element_id", "?")
     return str(props.get("name") or props.get("briefTitle") or props.get("facility")
                or props.get("nctId") or props.get("term") or node.get("element_id", "?"))
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _priority(passage: dict, hits: list[dict]) -> float:
+    """A search hit ranks by its re-ranker score (vector score if re-ranking
+    fell back). A neighbour has no score of its own: it was fetched to
+    complete a hit, so it ranks just below the nearest hit it extends."""
+    own = passage.get("rerank_score")
+    if own is None and passage.get("origin") == "search":
+        own = passage.get("score")
+    if own is not None:
+        return float(own)
+    near = [h for h in hits if h.get("doc_id") == passage.get("doc_id")
+            and h.get("position") is not None and passage.get("position") is not None
+            and abs(h["position"] - passage["position"]) <= _NEIGHBOR_REACH]
+    if not near:
+        return 0.0
+    return max(_priority(h, []) - 0.01 * abs(h["position"] - passage["position"])
+               for h in near)
+
+
+def select_passages(passages: list[dict]) -> tuple[list[dict], int]:
+    """The passages the composer reads, and how many were left out.
+
+    STEP 1  rank: re-ranker score; a neighbour just below the hit it extends
+    STEP 2  drop near-duplicates, keeping the higher-ranked copy — protocols
+            repeat whole sections (the synopsis restates the criteria)
+    STEP 3  take by rank until the character budget is spent
+    STEP 4  return in reading order: document, then position
+    """
+    hits = [p for p in passages if p.get("origin") == "search"]
+    ranked = sorted(passages, key=lambda p: _priority(p, hits), reverse=True)
+
+    kept, kept_words, used = [], [], 0
+    for p in ranked:
+        words = _words(str(p.get("text", "")))
+        if any(len(words & w) >= _DUPLICATE_OVERLAP * min(len(words), len(w))
+               for w in kept_words if words and w):
+            continue
+        size = min(len(str(p.get("text", ""))), _PASSAGE_CHARS)
+        if used + size > _EVIDENCE_CHARS:
+            continue
+        kept.append(p); kept_words.append(words); used += size
+
+    kept.sort(key=lambda p: (str(p.get("doc_id")), p.get("position") or 0))
+    return kept, len(passages) - len(kept)
 
 
 def evidence(captured_results: dict) -> str:
@@ -363,8 +566,8 @@ def evidence(captured_results: dict) -> str:
     An earlier version gave the composer only summarize_call() — counts like
     "3 passage(s)". It could not state a single finding; the best it could
     write was that a query had returned something. The model that ROUTES
-    still sees only summaries. The model that WRITES must see the evidence
-    it is writing about, or its answer has nothing in it.
+    sees summaries. The model that WRITES must see the evidence it is
+    writing about, or its answer has nothing in it.
     """
     blocks = []
     for name, result in captured_results.items():
@@ -382,16 +585,25 @@ def evidence(captured_results: dict) -> str:
         elif shape == "graph":
             nodes = result.get("nodes", [])
             lines.append(f"{len(nodes)} nodes, {len(result.get('relationships', []))} relationships")
-            lines += [f"  ({'/'.join(n.get('labels', []))}) {_clean(_node_name(n))}"
+            lines += [f"  ({'/'.join(n.get('labels', []))}) {_clean(_node_label(n))}"
                       for n in nodes[:_NODES]]
+        elif shape == "memory":
+            lines.append(f"{result.get('kind')} memories recalled for: "
+                         f"{_clean(result.get('query', ''))}")
+            lines += [f"  ({i.get('created_at', '')[:10]}) {_clean(i.get('text', ''))}"
+                      for i in result.get("items", [])]
         elif shape == "passages":
-            for p in result.get("passages", [])[:_PASSAGES]:
+            chosen, left_out = select_passages(result.get("passages", []))
+            for p in chosen:
                 text = str(p.get("text", "")).replace("<untrusted_data>", "") \
                                              .replace("</untrusted_data>", "")
                 lines.append(f"  doc={p.get('doc_id')} page={p.get('page')} "
                              f"headings={p.get('headings')}")
                 lines.append("  " + text[:_PASSAGE_CHARS]
                              + ("…" if len(text) > _PASSAGE_CHARS else ""))
+            if left_out:
+                lines.append(f"  ({left_out} lower-ranked or repeated passage(s) not shown "
+                             "here; the analyst sees all of them)")
         blocks.append("\n".join(lines))
     body = "\n\n".join(blocks) or "nothing was retrieved"
     return f"<untrusted_data>\n{body}\n</untrusted_data>"
@@ -409,12 +621,18 @@ async def _compose(state: GraphState) -> dict:
     """
     from .config import render
     s = settings()
+    decision = state.get("decision")
     prompt = render(s.compose_template, {
-        "question": state["question"],
+        "question": (decision.resolved_question if decision and decision.resolved_question
+                     else state["question"]),
         "evidence": evidence(state.get("captured_results", {}))})
     with span("supervisor.compose", evidence_chars=len(prompt)):
         response = await s.chat_model().ainvoke([HumanMessage(content=prompt)])
-    text = response.content if isinstance(response.content, str) else str(response.content)
+    # The Responses API returns content as a LIST of blocks (text, reasoning,
+    # annotations). str() of that list is what an analyst once received:
+    # "[{'type': 'text', 'text': ..., 'phase': 'final_answer'}]". .text joins
+    # only the text blocks.
+    text = response.text() if callable(response.text) else response.text
     await asyncio.to_thread(check, text, "OUTPUT", s.guardrail_id, s.guardrail_version)
     return {"composed_answer": text}
 
@@ -428,23 +646,40 @@ def build_graph():
     graph.add_edge("route", "render_decision")
     graph.add_edge("render_decision", "compose")
     graph.add_edge("compose", END)
-    return graph.compile()
+    return graph.compile(name="supervisor")
 
 
-async def orchestrate(question: str, context_id: str | None = None) -> SupervisorResponse:
-    """A guardrail intervention anywhere — the question, a model turn, the
-    composed answer — ends the turn with the guardrail's own message."""
+async def orchestrate(question: str, context_id: str | None = None,
+                      history: list[dict] | None = None,
+                      user_id: str | None = None) -> SupervisorResponse:
+    """One turn.
+
+    history   earlier messages of this conversation, oldest first, from the
+              backend — [{"role": "user"|"assistant", "text": ...}]
+    user_id   the signed-in username; scopes every memory read and write
+
+    A guardrail intervention anywhere — the question, a model turn, the
+    composed answer — ends the turn with the guardrail's own message.
+    """
+    from .tracing import current_trace_id
     CONVERSATION.set(context_id)
+    USER.set(user_id or None)
+    history = history or []
     try:
-        state = await build_graph().ainvoke({"question": question})
+        state = await build_graph().ainvoke({"question": question, "history": history})
     except GuardrailBlocked as blocked:
         return SupervisorResponse(
             decision=SupervisorDecision(answerable=False,
                                         note=f"Blocked by guardrail ({blocked.source})."),
-            composed_answer=blocked.message, render_target="none")
+            composed_answer=blocked.message, render_target="none",
+            trace_id=current_trace_id())
     return SupervisorResponse(
         calls=[AgentCall(**c) for c in state.get("agent_calls", [])],
+        tool_calls=[ToolCall(**c) for c in state.get("tool_calls", [])],
         decision=state["decision"],
         render_target=state.get("render_target", "none"),
         composed_answer=state.get("composed_answer", ""),
-        usage=state.get("usage"))
+        usage=state.get("usage"),
+        results=state.get("captured_results", {}),
+        history_turns=min(len(history), settings().max_history_messages),
+        trace_id=current_trace_id())

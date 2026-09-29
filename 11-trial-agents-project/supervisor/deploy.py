@@ -36,11 +36,27 @@ from pathlib import Path
 
 import boto3
 
-from infra import preflight, observability, config_store, guardrail, prompts, runtime_deploy, runtime_iam
+from infra import (preflight, observability, config_store, guardrail, memory_store,
+                   prompts, runtime_deploy, runtime_iam)
 
 AGENT = "supervisor"
 HERE = Path(__file__).parent
 LIMITS = {"max_agent_calls_per_turn": 6}
+
+
+PINECONE_SECRET = "trial-search/pinecone"      # the same Pinecone account; owned by trial_search
+
+
+def _pinecone_secret() -> tuple[str, str]:
+    """(secret ARN, api key) — ("", "") until trial_search has created it and
+    the real key is set."""
+    sm = boto3.client("secretsmanager")
+    try:
+        value = sm.get_secret_value(SecretId=PINECONE_SECRET)
+    except sm.exceptions.ResourceNotFoundException:
+        return "", ""
+    key = json.loads(value["SecretString"]).get("api_key", "")
+    return value["ARN"], ("" if key in ("", "replace-me") else key)
 
 
 def main() -> None:
@@ -70,13 +86,26 @@ def main() -> None:
     compose = prompts.publish("supervisor-compose", HERE / "prompts" / "compose.md",
                               "supervisor composer instruction")
 
+    print("\n=== STEP 4b: memory store ===")
+    region = boto3.Session().region_name or "us-east-1"
+    memory_table_arn = memory_store.ensure_table(region)
+    pinecone_arn, pinecone_key = _pinecone_secret()
+    memory_index = memory_store.ensure_index(pinecone_key) if pinecone_key else ""
+    if not memory_index:
+        print(f"  Pinecone key not set in {PINECONE_SECRET}: memory tools will report "
+              "'not configured' until it is set and this deploy is re-run")
+
     print("\n=== STEP 5: parameters ===")
     config_store.put_parameters(prefix, {
         **LIMITS, "registry_path": config_store.REGISTRY_PATH,
         "guardrail_id": gr["id"], "guardrail_version": gr["version"],
         "prompt_id": system["id"], "prompt_version": system["version"],
         "compose_prompt_id": compose["id"], "compose_prompt_version": compose["version"],
-        "openai_secret_id": config_store.OPENAI_SECRET})
+        "openai_secret_id": config_store.OPENAI_SECRET,
+        # SSM rejects empty values: memory parameters exist only once memory
+        # does. Without them the memory tools report "not configured".
+        **({"memory_table": memory_store.TABLE, "memory_index": memory_index,
+            "pinecone_secret_id": PINECONE_SECRET} if memory_index else {})})
 
     print("\n=== STEP 6: runtime ===")
     repo_uri, repo_arn = runtime_deploy.ensure_ecr_repo()
@@ -84,7 +113,8 @@ def main() -> None:
         specialist_arns=[s["arn"] for s in specialists.values()], ecr_repo_arn=repo_arn,
         guardrail_arn=gr["arn"], prompt_arns=[system["arn"], compose["arn"]],
         secret_arn=openai_arn, param_prefix=prefix,
-        registry_path=config_store.REGISTRY_PATH)
+        registry_path=config_store.REGISTRY_PATH,
+        memory_table_arn=memory_table_arn, pinecone_secret_arn=pinecone_arn)
     image_uri = runtime_deploy.build_and_push(repo_uri, str(HERE / "agent_code"))
     runtime_arn = runtime_deploy.deploy_runtime(image_uri, role_arn, {
         "PARAM_PREFIX": prefix,

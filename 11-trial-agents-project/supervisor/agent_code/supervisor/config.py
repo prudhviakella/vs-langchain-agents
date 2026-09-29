@@ -54,13 +54,29 @@ class Settings:
     compose_template: str   # rendered per question: {{question}}, {{evidence}}
     specialists: dict   # name -> {"arn": ..., "description": ...}
     max_agent_calls_per_turn: int
+    # Memory (optional: absent -> the memory tools report "unavailable").
+    memory_table: str = ""
+    memory_index: str = ""
+    pinecone_api_key: str = field(default="", repr=False)
+    max_memory_calls_per_turn: int = 4
+    # Earlier messages accepted with a request: 10 interactions = 20 messages.
+    max_history_messages: int = 20
 
     def chat_model(self):
-        """The OpenAI chat model. Temperature is left at the provider default:
-        reasoning models reject a temperature argument outright."""
+        """The OpenAI chat model, over the RESPONSES API.
+
+        ChatOpenAI calls Chat Completions by default. OpenAI's models page
+        lists the latest models (GPT-6) as available via the Responses API
+        and does not mention Chat Completions, so a GPT-6 model could fail on
+        every call through the default endpoint. The Responses API serves
+        every current model, so it is used unconditionally.
+
+        Temperature is left at the provider default: reasoning models reject
+        a temperature argument outright.
+        """
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(model=self.openai_model, api_key=self.openai_api_key,
-                          timeout=120, max_retries=2)
+                          use_responses_api=True, timeout=120, max_retries=2)
 
 
 def _parameters(ssm, path: str) -> dict[str, str]:
@@ -131,6 +147,16 @@ def load(env=os.environ, session=None) -> Settings:
         if "{{" + variable + "}}" not in compose_template:
             raise RuntimeError(f"compose prompt lacks the {{{{{variable}}}}} variable")
 
+    # STEP 4 — memory, if deployed: DynamoDB table + Pinecone index names,
+    # and the Pinecone key from the secret trial_search already uses
+    pinecone_key = ""
+    if params.get("pinecone_secret_id"):
+        pinecone_key = json.loads(session.client("secretsmanager", region_name=region)
+                                  .get_secret_value(SecretId=params["pinecone_secret_id"])
+                                  ["SecretString"]).get("api_key", "")
+        if pinecone_key == "replace-me":
+            pinecone_key = ""
+
     return Settings(
         region=region, openai_api_key=secret["api_key"], openai_model=secret["model"],
         system_prompt=render(template, {
@@ -139,7 +165,12 @@ def load(env=os.environ, session=None) -> Settings:
         prompt_version=params["prompt_version"],
         guardrail_id=params["guardrail_id"], guardrail_version=params["guardrail_version"],
         compose_template=compose_template, specialists=specialists,
-        max_agent_calls_per_turn=int(params["max_agent_calls_per_turn"]),)
+        max_agent_calls_per_turn=int(params["max_agent_calls_per_turn"]),
+        memory_table=params.get("memory_table", ""),
+        memory_index=params.get("memory_index", "") if pinecone_key else "",
+        pinecone_api_key=pinecone_key,
+        max_memory_calls_per_turn=int(params.get("max_memory_calls_per_turn", 4)),
+        max_history_messages=int(params.get("max_history_messages", 20)),)
 
 
 _current: Settings | None = None

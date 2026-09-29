@@ -69,8 +69,10 @@ WHAT THIS DOES NOT DO
 
     - It does not decide whether to expand. The model decides; this file
       only bounds and records what it asks for.
-    - It does not rank or rerank. Passages keep the order the tools
-      return; the final response is ordered by document and position.
+    - It does not rank or re-rank. The Lambda's semantic_search does that
+      (Cohere, see lambda_tools/rerank.py) and decides WHICH passages come
+      back; this file keeps them. The final response is then ordered by
+      document and position — reading order, not relevance order.
 """
 from __future__ import annotations
 
@@ -88,7 +90,7 @@ from langgraph.types import Command
 
 from .config import settings
 from .guardrail import GuardrailBlocked, GuardrailMiddleware
-from .schemas import (ModelDecision, Passage, RetrievalStats, TrialSearchResponse,
+from .schemas import (ModelDecision, Passage, RetrievalStats, SearchQuery, TrialSearchResponse,
                       collect_usage)
 
 log = logging.getLogger("agent.trial_search.core")
@@ -131,6 +133,7 @@ class RetrievalState(AgentState):
     table_calls: Annotated[int, operator.add]
     expansion_tokens: Annotated[int, operator.add]
     captured_passages: Annotated[list[dict], operator.add]
+    searches: Annotated[list[dict], operator.add]
 
 
 # ── reading a tool result ───────────────────────────────────────────────
@@ -236,11 +239,26 @@ class RetrievalMiddleware(AgentMiddleware):
         call_id = request.tool_call["id"]
         payload = _payload(result)
 
+        # The search as it ran — what the analyst sees under "Queries".
+        # Taken from the executed call and its result, not from the model.
+        failed = payload is None or bool(payload.get("error"))
+        searches = []
+        if kind == SEARCH:
+            args = request.tool_call.get("args", {})
+            searches = [{"query": str(args.get("query", "")),
+                         "doc_id": args.get("doc_id") or None,
+                         "content_type": args.get("content_type") or None,
+                         "top_k": args.get("top_k"),
+                         "candidates": 0 if failed else int(payload.get("candidates", 0) or 0),
+                         "results": 0 if failed else len(payload.get("passages", [])),
+                         "reranked": None if failed else payload.get("reranked"),
+                         "succeeded": not failed}]
+
         # A failed call still counts, so an erroring tool cannot loop forever.
-        if payload is None or payload.get("error"):
+        if failed:
             detail = (payload or {}).get("detail") or _fence(getattr(result, "content", ""))
             return Command(update={
-                self.counter[kind]: 1,
+                self.counter[kind]: 1, "searches": searches,
                 "messages": [ToolMessage(tool_call_id=call_id,
                                          content=f"ERROR from {kind}: {detail}")]})
 
@@ -256,6 +274,7 @@ class RetrievalMiddleware(AgentMiddleware):
             self.counter[kind]: 1,
             "expansion_tokens": tokens,
             "captured_passages": passages,
+            "searches": searches,
             "messages": [ToolMessage(tool_call_id=call_id,
                                      content=self._view(kind, payload, passages, stats))]})
 
@@ -306,6 +325,7 @@ def build_agent(tools: list, model=None, cfg=None):
     its INPUT check runs before anything else."""
     s = cfg or settings()
     return create_agent(
+        name="trial_search",
         model=model or s.chat_model(), tools=tools, system_prompt=s.system_prompt,
         response_format=ToolStrategy(ModelDecision),
         middleware=[GuardrailMiddleware(s.guardrail_id, s.guardrail_version,
@@ -338,7 +358,8 @@ def assemble(result: dict, cfg=None) -> TrialSearchResponse:
                       key=lambda p: (p.doc_id, p.position if p.position is not None else 0))
 
     common = dict(stats=stats, usage=usage, entities=decision.entities,
-                  result_note=decision.note)
+                  result_note=decision.note,
+                  searches=[SearchQuery(**q) for q in result.get("searches", [])])
     if stats.search_calls == 0:
         return TrialSearchResponse(result_shape="not_executed", **{
             **common, "result_note": "No search was executed."})

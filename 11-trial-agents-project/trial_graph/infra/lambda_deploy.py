@@ -48,7 +48,7 @@ def _build_zip() -> bytes:
 
     subprocess.run([sys.executable, "-m", "pip", "install",
                     "--target", str(build_dir), "neo4j>=5.20",
-                    "--quiet", "--break-system-packages"], check=True)
+                    "--quiet", "--disable-pip-version-check", "--no-warn-conflicts", "--break-system-packages"], check=True)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

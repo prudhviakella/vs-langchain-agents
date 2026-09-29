@@ -19,6 +19,11 @@ import time
 
 import boto3
 
+# A Gateway tool's inputSchema accepts ONLY: type, properties, required, items,
+# description (checked against the service model). No enum, default, minimum
+# or format — those are rejected at create_gateway_target. Allowed values are
+# stated in the description, and the Lambda enforces them itself.
+
 client = boto3.client("bedrock-agentcore-control")
 
 GATEWAY_NAME = "trial-search-gateway"
@@ -40,7 +45,8 @@ TOOL_SCHEMA = [
             "query": {"type": "string"},
             "top_k": {"type": "integer", "description": "How many passages (max 20)."},
             "content_type": {"type": "string",
-                             "enum": ["text", "table", "figure", "table_summary"]},
+                             "description": "Optional. One of: text, table, table_summary, "
+                                            "figure, formula. Any other value is rejected."},
             "doc_id": {"type": "string", "description": "Restrict to one document."},
         }},
     },

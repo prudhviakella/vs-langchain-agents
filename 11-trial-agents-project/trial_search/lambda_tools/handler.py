@@ -5,7 +5,9 @@
         v
     AgentCore Gateway ──► THIS LAMBDA (dispatch on tool name)
         │
-        ├─ semantic_search    ENTRY. Embed the question, query Pinecone.
+        ├─ semantic_search    ENTRY. Embed the question, query Pinecone for
+        │                     a wide pool (RECALL), then Cohere re-ranks it
+        │                     and keeps top_k (PRECISION) — see rerank.py.
         │                     Text comes back on the match itself
         │                     (metadata.text, written by chunking._finalise).
         │
@@ -60,6 +62,9 @@ import os
 
 import boto3
 
+from rerank import rerank
+from symbol_fonts import normalize
+
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 
@@ -70,7 +75,18 @@ EMBED_MODEL = "text-embedding-3-small"
 
 HARD_MAX_WINDOW = 10      # defense in depth; the middleware clamps first
 HARD_MAX_TOP_K = 20
+# The recall pool semantic_search hands to the re-ranker. Wide enough that the
+# right passage is in it; Cohere scores all of them in ONE call, so a larger
+# pool costs no extra calls against a trial key's 10 per minute.
+RERANK_POOL = int(os.environ.get("RERANK_POOL", "40"))
+HARD_MAX_POOL = 100
 HARD_MAX_FRAGMENTS = 50   # real max observed in the corpus: 18
+
+# Every content_type in the index. The Gateway cannot enforce an enum, so this
+# does: an unknown value would otherwise become a Pinecone filter that matches
+# nothing, reported as "the corpus does not cover this" — a confident negative
+# produced by a typo.
+CONTENT_TYPES = ("text", "table", "table_summary", "figure", "formula")
 
 _openai = None
 _index = None
@@ -115,14 +131,15 @@ def _get_driver():
 
 def _passage(chunk_id: str, meta: dict, origin: str, score=None) -> dict:
     """One shape for every tool, so the agent never branches on which
-    tool produced a passage."""
+    tool produced a passage. Text and headings pass through
+    symbol_fonts.normalize(): "BP \\uf0b3 150" is read as "BP ≥ 150"."""
     return {
         "chunk_id": chunk_id,
         "doc_id": meta.get("doc_id", ""),
         "score": score,
-        "text": meta.get("text", ""),
+        "text": normalize(meta.get("text", "")),
         "content_type": meta.get("content_type", ""),
-        "headings": meta.get("headings", []),
+        "headings": [normalize(h) for h in meta.get("headings", []) or []],
         "page": meta.get("page"),
         "position": meta.get("position"),
         "table_id": meta.get("table_id", ""),
@@ -144,10 +161,15 @@ def _fetch(ids: list[str]) -> dict:
 # ── tool 1: semantic_search ─────────────────────────────────────────────
 
 def semantic_search(args: dict) -> dict:
+    """Recall a wide pool by vector similarity, then keep the top_k that
+    Cohere judges most relevant. The result says whether re-ranking ran."""
     top_k = max(1, min(int(args.get("top_k", 8)), HARD_MAX_TOP_K))
 
-    embedding = _get_openai().embeddings.create(
-        model=EMBED_MODEL, input=args["query"]).data[0].embedding
+    # STEP 1  validate before spending an embedding call on a bad request
+    if args.get("content_type") and args["content_type"] not in CONTENT_TYPES:
+        return {"error": True,
+                "detail": f"content_type {args['content_type']!r} is not valid; use one of "
+                          f"{', '.join(CONTENT_TYPES)}, or omit it to search every type."}
 
     clauses = []
     if args.get("content_type"):
@@ -156,10 +178,19 @@ def semantic_search(args: dict) -> dict:
         clauses.append({"doc_id": {"$eq": args["doc_id"]}})
     flt = {"$and": clauses} if len(clauses) > 1 else (clauses[0] if clauses else None)
 
-    result = _get_index().query(vector=embedding, top_k=top_k,
+    # STEP 2  RECALL — a pool wider than top_k, in vector order
+    embedding = _get_openai().embeddings.create(
+        model=EMBED_MODEL, input=args["query"]).data[0].embedding
+    pool = min(max(top_k, RERANK_POOL), HARD_MAX_POOL)
+    result = _get_index().query(vector=embedding, top_k=pool,
                                 include_metadata=True, filter=flt)
-    return {"passages": [_passage(m.id, m.metadata or {}, "search", m.score)
-                         for m in result.matches]}
+    candidates = [_passage(m.id, m.metadata or {}, "search", m.score)
+                  for m in result.matches]
+
+    # STEP 3  PRECISION — Cohere keeps the top_k; falls back to vector order
+    ranked = rerank(args["query"], candidates, top_k,
+                    read_secret=lambda: _secret("COHERE_SECRET_ID"))
+    return {**ranked, "candidates": len(candidates)}
 
 
 # ── tool 2: expand_neighbors (Case A) ───────────────────────────────────

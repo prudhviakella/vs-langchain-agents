@@ -6,6 +6,7 @@
 """
 import ast
 import asyncio
+import json
 import importlib
 import importlib.util
 import sys
@@ -76,19 +77,26 @@ def test_supervisor_call_carries_its_span_as_the_specialists_parent():
     agent_client._client = Client()
 
     sup, spec = tracing("supervisor"), tracing("trial_graph")
-    with sup.span("supervisor.call_agent") as parent:
+    with sup.span("call_agent trial_graph") as parent:
         agent_client.call_specialist("arn:x", "trial_graph", "q", "c" * 36)
-    assert sent["traceParent"].split("-")[1] == hex_trace(parent)
 
-    # the specialist side, from the headers the Runtime delivers
-    token = spec.attach_context(spec.extract_parent_context({"traceparent": sent["traceParent"]}))
+    # Regression: trace context must NOT be passed as invoke_agent_runtime
+    # parameters. They become SigV4-signed headers, and in AWS every
+    # specialist call then failed "The request signature we calculated does
+    # not match the signature you provided".
+    assert not {"traceParent", "traceState", "baggage"} & set(sent)
+    metadata = json.loads(sent["payload"])["params"]["message"]["metadata"]
+    assert metadata["traceparent"].split("-")[1] == hex_trace(parent)
+
+    # the specialist side, from the message metadata it receives
+    token = spec.attach_context(spec.extract_parent_context(metadata))
     try:
-        with spec.span("trial_graph.request"):
+        with spec.agent_span("trial_graph", conversation_id="c" * 36):
             pass
     finally:
         spec.detach_context(token)
     spans = {s.name: s for s in exporter.get_finished_spans()}
-    child, root = spans["trial_graph.request"], spans["supervisor.call_agent"]
+    child, root = spans["invoke_agent trial_graph"], spans["call_agent trial_graph"]
     assert hex_trace(child) == hex_trace(root)
     assert child.parent.span_id == root.context.span_id
 
@@ -103,29 +111,49 @@ def load_main(agent):
     return module
 
 
+@pytest.mark.parametrize("carrier", ["header", "message_metadata"])
 @pytest.mark.parametrize("agent,executor", [("trial_graph", "TrialGraphExecutor"),
-                                            ("trial_search", "TrialSearchExecutor")])
-def test_executor_joins_the_callers_trace(agent, executor):
+                                            ("trial_search", "TrialSearchExecutor"),
+                                            ("supervisor", "SupervisorExecutor")])
+def test_executor_joins_the_callers_trace(agent, executor, carrier):
     """The real execute(): headers captured by bedrock_agentcore -> attached ->
     the agent's root span belongs to the caller's trace."""
     exporter = otel()
     main = load_main(agent)
     schemas = importlib.import_module(f"{agent}.schemas")
-    response_type = next(getattr(schemas, n) for n in dir(schemas) if n.endswith("Response"))
+    if agent == "supervisor":
+        response = schemas.SupervisorResponse(decision=schemas.SupervisorDecision(answerable=True))
+        expected = ("answerable", True)
+    else:
+        response_type = next(getattr(schemas, n) for n in dir(schemas)
+                             if n.endswith("Response") and n.startswith("Trial"))
+        response = response_type(result_shape="empty")
+        expected = ("result_shape", "empty")
 
-    async def orchestrate(question):
-        return response_type(result_shape="empty")
+    async def orchestrate(question, *context_id, **history_and_user):
+        return response
     main.orchestrate = orchestrate
-    main.BedrockAgentCoreContext.set_request_headers({"traceparent": TRACEPARENT})
+    if carrier == "header":
+        main.BedrockAgentCoreContext.set_request_headers({"traceparent": TRACEPARENT})
+        message = None
+    else:                                    # how the supervisor sends it
+        main.BedrockAgentCoreContext.set_request_headers({})
+        message = type("M", (), {"metadata": {"traceparent": TRACEPARENT}})()
 
     class Queue:
         async def enqueue_event(self, event): self.event = event
-    ctx = type("Ctx", (), {"get_user_input": lambda self: "q", "context_id": "ctx-1"})()
+    ctx = type("Ctx", (), {"get_user_input": lambda self: "q", "context_id": "ctx-1",
+                           "message": message})()
     asyncio.run(getattr(main, executor)().execute(ctx, Queue()))
 
-    root = next(s for s in exporter.get_finished_spans() if s.name == f"{agent}.request")
+    root = next(s for s in exporter.get_finished_spans() if s.name == f"invoke_agent {agent}")
+    # classified and labelled the way AgentCore Observability reads spans
+    assert root.attributes["gen_ai.operation.name"] == "invoke_agent"
+    assert root.attributes["gen_ai.agent.name"] == agent
+    assert root.attributes["gen_ai.conversation.id"] == "ctx-1"
+    assert root.attributes["openinference.span.kind"] == "AGENT"
     assert hex_trace(root) == TRACE_ID
-    assert root.attributes[f"{agent}.result_shape"] == "empty"
+    assert root.attributes[f"{agent}.{expected[0]}"] == expected[1]
 
 
 def test_guardrail_checks_are_spans():

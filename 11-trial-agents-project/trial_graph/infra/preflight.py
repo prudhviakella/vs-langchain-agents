@@ -113,13 +113,16 @@ def transaction_search_enabled(session) -> bool | None:
         return None                                    # cannot tell
 
 
-def check_permissions(session, caller_arn: str, actions: list[str]) -> list[str]:
+def check_permissions(session, caller_arn: str, actions: list[str]) -> list[str] | None:
+    """Actions not allowed — or None when nothing could be checked, so the
+    caller never reports a skipped check as a passed one."""
     iam = session.client("iam")
     try:
         arn = principal_arn(caller_arn, iam)
         if arn is None:
-            print("  IAM      root credentials — skipping the permission check")
-            return []
+            print("  IAM      root credentials — permission check skipped. Root keys cannot "
+                  "be restricted by any policy; prefer an IAM user or SSO role.")
+            return None
         denied = []
         for start in range(0, len(actions), 50):
             page = iam.simulate_principal_policy(PolicySourceArn=arn,
@@ -129,7 +132,7 @@ def check_permissions(session, caller_arn: str, actions: list[str]) -> list[str]
     except Exception as exc:
         print(f"  IAM      WARNING: could not simulate permissions ({type(exc).__name__}); "
               "continuing — a missing permission will fail at the call that needs it")
-        return []
+        return None
     return denied
 
 
@@ -143,6 +146,8 @@ def run(needs_gateway: bool, session=None, sh=_sh) -> None:
     if transaction_search_enabled(session) is not True:
         actions += TRANSACTION_SEARCH + ["xray:GetTraceSegmentDestination"]
     denied = check_permissions(session, caller, actions)
+    if denied is None:
+        return
     if denied:
         raise SystemExit("the deploying identity lacks these permissions:\n  "
                          + "\n  ".join(sorted(set(denied)))

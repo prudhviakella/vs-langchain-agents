@@ -51,7 +51,11 @@ class Passage(BaseModel):
     doc_id: str
     text: str
     origin: Literal["search", "neighbor", "table"]
-    score: float | None = None
+    score: float | None = None          # vector similarity (Pinecone)
+    # Cohere relevance, set only on search hits that were re-ranked. Declared
+    # here because pydantic drops undeclared fields: without this line the
+    # Lambda's score would vanish before the Supervisor ever saw it.
+    rerank_score: float | None = None
     content_type: str = ""
     headings: list[str] = Field(default_factory=list)
     page: int | None = None
@@ -70,6 +74,19 @@ class RetrievalStats(BaseModel):
     expansion_token_budget: int = 0
 
 
+class SearchQuery(BaseModel):
+    """One semantic_search as it actually ran — recorded by the middleware
+    from the tool call and its result, never reported by the model."""
+    query: str
+    doc_id: str | None = None
+    content_type: str | None = None
+    top_k: int | None = None
+    candidates: int = 0          # the recall pool Pinecone returned
+    results: int = 0             # passages kept after re-ranking
+    reranked: bool | None = None
+    succeeded: bool = True
+
+
 class TrialSearchResponse(BaseModel):
     """Returned to the Supervisor.
 
@@ -84,6 +101,9 @@ class TrialSearchResponse(BaseModel):
     entities: list[str] = Field(default_factory=list)
     result_note: str = ""
     stats: RetrievalStats = Field(default_factory=RetrievalStats)
+    searches: list[SearchQuery] = Field(
+        default_factory=list,
+        description="Every search that ran, in order: the query, its scope, what came back.")
     usage: TokenUsage = Field(default_factory=TokenUsage)
 
 

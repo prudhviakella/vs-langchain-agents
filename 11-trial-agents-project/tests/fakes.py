@@ -40,7 +40,14 @@ def call(_tool: str, **args) -> AIMessage:
 
 
 def load_lambda(agent: str):
-    """Each Lambda is a module named `handler`; load under a unique name."""
+    """Each Lambda is a module named `handler`; load under a unique name.
+
+    In the deployed zip every lambda_tools/*.py sits at the root, so the
+    handler imports its siblings by bare name ("from rerank import rerank").
+    The folder goes on sys.path here to reproduce that layout."""
+    folder = str(ROOT / agent / "lambda_tools")
+    if folder not in sys.path:
+        sys.path.insert(0, folder)
     spec = importlib.util.spec_from_file_location(
         f"{agent}_handler", ROOT / agent / "lambda_tools" / "handler.py")
     module = importlib.util.module_from_spec(spec)

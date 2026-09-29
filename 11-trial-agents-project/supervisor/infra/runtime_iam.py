@@ -123,7 +123,8 @@ def _common(account: str, region: str, *, paths: list[str], secret_arn: str,
 
 def runtime_role(*, specialist_arns: list[str], ecr_repo_arn: str, guardrail_arn: str,
                  prompt_arns: list[str], secret_arn: str, param_prefix: str,
-                 registry_path: str) -> str:
+                 registry_path: str, memory_table_arn: str = "",
+                 pinecone_secret_arn: str = "") -> str:
     account, region = _account_region()
     arn = _ensure_role(account)
     policies = _common(account, region, paths=[param_prefix, registry_path],
@@ -135,5 +136,15 @@ def runtime_role(*, specialist_arns: list[str], ecr_repo_arn: str, guardrail_arn
     policies["invoke-specialists"] = [{
         "Effect": "Allow", "Action": "bedrock-agentcore:InvokeAgentRuntime",
         "Resource": [r for a in specialist_arns for r in (a, f"{a}/*")]}]
+    # Memory: exactly the one table, and the Pinecone key's secret — nothing wider.
+    if memory_table_arn:
+        policies["memory-table"] = [{
+            "Effect": "Allow", "Resource": memory_table_arn,
+            "Action": ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query",
+                       "dynamodb:UpdateItem", "dynamodb:DeleteItem"]}]
+    if pinecone_secret_arn:
+        policies["read-pinecone-secret"] = [{
+            "Effect": "Allow", "Action": "secretsmanager:GetSecretValue",
+            "Resource": pinecone_secret_arn}]
     _converge(policies)
     return arn

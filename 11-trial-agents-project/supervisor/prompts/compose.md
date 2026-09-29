@@ -20,6 +20,13 @@ When a specialist's note says it could not check something — no drug data is l
   RIGHT  "Drug data is not loaded, so which trials test pembrolizumab
           could not be checked."
 
+## A THRESHOLD IS QUOTED WITH THE SIGN THE EVIDENCE SHOWS, NEVER A GUESSED ONE
+Eligibility and dosing rules turn on their comparison sign: ≥ 150 mmHg and > 150 mmHg exclude different patients. Copy the sign exactly as the evidence prints it. Where the evidence shows [?], a symbol in the source could not be read: give the number and say the sign is not legible — never supply ≥, >, ≤ or < yourself.
+
+  WRONG  "systolic BP above 150 mmHg"           (the evidence reads "BP [?] 150 mmHg")
+  RIGHT  "a systolic BP threshold of 150 mmHg (the comparison sign is not legible
+          in the protocol text)"
+
 ## WHEN NOTHING USABLE CAME BACK
 Say so in one sentence, and say what was searched. Do not hedge, and do not fill the gap with general knowledge about clinical trials.
 

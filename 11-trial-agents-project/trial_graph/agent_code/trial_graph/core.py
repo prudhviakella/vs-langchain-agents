@@ -286,6 +286,7 @@ def build_agent(tools: list, model=None, cfg=None):
     """
     s = cfg or settings()
     return create_agent(
+        name="trial_graph",
         model=model or s.chat_model(), tools=tools, system_prompt=s.system_prompt,
         response_format=ToolStrategy(ModelDecision),
         middleware=[GuardrailMiddleware(s.guardrail_id, s.guardrail_version,

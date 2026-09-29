@@ -27,7 +27,9 @@ if os.environ.get("E2E_SPAN_FILE"):
                 for sp in spans:
                     f.write(json.dumps({
                         "name": sp.name, "trace": format(sp.context.trace_id, "032x"),
-                        "parent": format(sp.parent.span_id, "016x") if sp.parent else None}) + "\n")
+                        "parent": format(sp.parent.span_id, "016x") if sp.parent else None,
+                        "attributes": {k: v for k, v in (sp.attributes or {}).items()
+                                       if isinstance(v, (str, int, float, bool))}}) + "\n")
             return SpanExportResult.SUCCESS
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(ToFile()))

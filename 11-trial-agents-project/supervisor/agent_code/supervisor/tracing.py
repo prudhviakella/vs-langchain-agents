@@ -1,9 +1,9 @@
 """OpenTelemetry helpers for supervisor — named spans, and trace context across agents.
 
-    analyst -> supervisor ──invoke_agent_runtime(traceParent=...)──► specialist
-                  │                                                     │
-          inject_trace_headers()                     extract_parent_context(headers)
-          current span -> W3C traceparent            + attach_context() in execute()
+    analyst -> supervisor ──invoke_agent_runtime(payload: A2A message)──► specialist
+                  │          message.metadata = {traceparent, ...}      │
+          inject_trace_headers()                  extract_parent_context(metadata)
+          current span -> W3C traceparent         + attach_context() in execute()
                   │                                                     │
                   └──────────── one trace_id across every agent ────────┘
 
@@ -15,17 +15,20 @@ environment variables are preset by the runtime; spans land in CloudWatch
 (aws/spans) and the GenAI Observability dashboard — once CloudWatch Transaction
 Search is enabled for the account (infra/observability.py).
 
-WHY PROPAGATION IS EXPLICIT
+WHY PROPAGATION IS EXPLICIT, AND WHY IT RIDES IN THE MESSAGE
 
-The supervisor calls a specialist through boto3's invoke_agent_runtime, which
-has first-class traceParent / traceState / baggage parameters: nothing fills
-them unless we do. On the receiving side, bedrock_agentcore stores the W3C
-headers (traceparent, tracestate, baggage pass its forwarding filter;
-X-Amzn-Trace-Id does not), but the A2A executor runs where no automatic
-context threading reaches — the reference found a sibling agent's spans
-missing from the unified trace for exactly this reason, despite an identical
-opentelemetry-instrument entrypoint. So the context is extracted and attached
-by hand, and detached in a finally.
+Nothing carries trace context from the supervisor to a specialist unless we
+do. The A2A executor runs where no automatic context threading reaches, so
+the context is extracted and attached by hand, and detached in a finally.
+
+It travels in the A2A message metadata, NOT in invoke_agent_runtime's
+traceParent / traceState / baggage parameters. Those become SigV4-signed
+headers — botocore exempts only x-amzn-trace-id from signing, because
+tracing infrastructure rewrites trace headers in transit — and in AWS every
+specialist call then failed "The request signature we calculated does not
+match the signature you provided". The message body is signed too, but
+nothing on the path rewrites it. Executors still accept an inbound
+traceparent header first, for callers that send one.
 
 GRACEFUL, ALWAYS
 
@@ -123,6 +126,31 @@ def span(name: str, **attributes):
             raise                                   # never swallow
 
 
+# The attributes Bedrock AgentCore's GenAI Observability classifies spans by.
+# Its documentation: a span is an agent span when gen_ai.operation.name is
+# invoke_agent (or openinference.span.kind is AGENT / CHAIN), and the agent's
+# name is gen_ai.agent.name. The OpenTelemetry GenAI conventions name that
+# span "invoke_agent <agent name>". Without these, the agent's root span is
+# invisible to the "Agent spans" filter and shows no agent name.
+@contextmanager
+def agent_span(agent: str, conversation_id: str | None = None, **attributes):
+    """The root span of one agent run, named and classified the way AgentCore
+    Observability reads it. Extra attributes are prefixed like span()'s."""
+    with span(f"invoke_agent {agent}", **attributes) as sp:
+        if sp is not None:
+            for key, value in {"gen_ai.operation.name": "invoke_agent",
+                               "gen_ai.agent.name": agent,
+                               "gen_ai.provider.name": "openai",
+                               "gen_ai.conversation.id": conversation_id,
+                               "openinference.span.kind": "AGENT"}.items():
+                if value is not None:
+                    try:
+                        sp.set_attribute(key, value)
+                    except Exception:
+                        pass
+        yield sp
+
+
 def set_span_attrs(sp, **attributes) -> None:
     """Set attributes on an open span — for results known mid-phase."""
     if sp is None:
@@ -143,3 +171,14 @@ def shutdown() -> None:
             provider.shutdown()
     except Exception:
         pass
+
+
+def current_trace_id() -> str:
+    """The W3C trace id of the current span, as 32 hex characters — what
+    AgentOps links to. Empty when tracing is off or no span is recording."""
+    try:
+        from opentelemetry import trace
+        ctx = trace.get_current_span().get_span_context()
+        return format(ctx.trace_id, "032x") if ctx and ctx.trace_id else ""
+    except Exception:
+        return ""

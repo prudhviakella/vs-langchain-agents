@@ -10,7 +10,9 @@
 # `python main.py` — what an earlier version did — creates spans and exports none,
 # with no error anywhere.
 
-FROM --platform=linux/arm64 python:3.12-slim
+# No --platform here: `buildx build --platform linux/arm64` selects the arm64
+# base image. A constant FROM --platform only adds a build warning.
+FROM python:3.12-slim
 
 WORKDIR /app
 

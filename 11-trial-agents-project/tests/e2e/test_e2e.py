@@ -118,11 +118,16 @@ def test_supervisor_to_both_specialists_and_back(servers):
 
     # ── one trace across three processes ─────────────────────────────────
     sup = {s.name: s for s in exporter.get_finished_spans()}
-    calls = [s for s in exporter.get_finished_spans() if s.name == "supervisor.call_agent"]
     trace_id = format(sup["supervisor.route"].context.trace_id, "032x")
-    for agent, caller in zip(PORTS, calls):
+    for agent in PORTS:
+        # the caller's span names its target, so the tree shows which agent
+        caller = sup[f"call_agent {agent}"]
         remote = [json.loads(line) for line in SPAN_FILES[agent].read_text().splitlines()]
-        root = next(r for r in remote if r["name"] == f"{agent}.request")
+        root = next(r for r in remote if r["name"] == f"invoke_agent {agent}")
+        # what AgentCore Observability classifies and labels agent spans by
+        assert root["attributes"]["gen_ai.operation.name"] == "invoke_agent"
+        assert root["attributes"]["gen_ai.agent.name"] == agent
+        assert root["attributes"]["openinference.span.kind"] == "AGENT"
         assert root["trace"] == trace_id, f"{agent} is not in the supervisor's trace"
         assert root["parent"] == format(caller.context.span_id, "016x"), \
             f"{agent}'s root span is not the child of its call_agent span"

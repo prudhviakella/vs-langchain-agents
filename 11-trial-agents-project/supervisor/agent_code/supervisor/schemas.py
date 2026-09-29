@@ -46,6 +46,19 @@ class SupervisorDecision(BaseModel):
                     "worth surfacing. Not a summary — compose() writes "
                     "the analyst-facing prose separately.",
     )
+    resolved_question: str = Field(
+        default="",
+        description="The question rewritten to stand on its own when it "
+                    "refers to earlier turns ('its sponsor', 'that trial' -> "
+                    "'the sponsor of IMbrave150 (NCT03434379)'). Empty when "
+                    "the question already stands alone.",
+    )
+    from_conversation: bool = Field(
+        default=False,
+        description="True only when the answer comes entirely from the "
+                    "earlier turns shown to you (e.g. 'summarise what we "
+                    "found'), with no specialist or memory call needed.",
+    )
 
 
 class TokenUsage(BaseModel):
@@ -68,6 +81,16 @@ class AgentCall(BaseModel):
     rationale: str
     result_shape: str
     succeeded: bool
+
+
+class ToolCall(BaseModel):
+    """A non-specialist tool the supervisor chose to call — memory reads and
+    writes. Recorded by the tool itself, like AgentCall."""
+    tool: str
+    args: dict = Field(default_factory=dict)
+    succeeded: bool
+    result: str = ""
+    items: int = 0
 
 
 class SupervisorResponse(BaseModel):
@@ -93,6 +116,18 @@ class SupervisorResponse(BaseModel):
                     "call that produces the structured decision.",
     )
     usage: TokenUsage = Field(default_factory=TokenUsage)
+    tool_calls: list[ToolCall] = Field(
+        default_factory=list,
+        description="Memory tools the supervisor called, in order.")
+    results: dict = Field(
+        default_factory=dict,
+        description="Each specialist's full result (queries, rows, nodes, "
+                    "passages with doc and page) and each memory recall — "
+                    "what the UI shows as queries and citations.")
+    history_turns: int = Field(
+        default=0, description="Earlier messages passed in with this request.")
+    trace_id: str = Field(
+        default="", description="W3C trace id of this request, for AgentOps.")
 
 
 def collect_usage(messages, model_id: str) -> TokenUsage:

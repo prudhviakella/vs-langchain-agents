@@ -3,9 +3,10 @@
 
     python deploy.py --pinecone-index rag-docs
 
-    STEP 1   secrets      trial-search/pinecone, trial-agents/openai (placeholders if
-                          new); trial-graph/neo4j must exist — owned by trial_graph
-    STEP 2   Lambda role  read those three secrets
+    STEP 1   secrets      trial-search/pinecone, trial-search/cohere,
+                          trial-agents/openai (placeholders if new);
+                          trial-graph/neo4j must exist — owned by trial_graph
+    STEP 2   Lambda role  read those four secrets
     STEP 3   Lambda       semantic_search, expand_neighbors, expand_table
     STEP 4   Gateway      AWS_IAM (SigV4); target created or updated
     STEP 5   guardrail    shared; a new version only if the policy changed
@@ -41,12 +42,17 @@ from infra import (preflight, observability, config_store, gateway, guardrail, i
 AGENT = "trial_search"
 HERE = Path(__file__).parent
 PINECONE_SECRET = "trial-search/pinecone"
+# Cohere Rerank, called by the Lambda's semantic_search. Until the real key is
+# set, searches still work, in vector order, marked reranked=false.
+COHERE_SECRET = "trial-search/cohere"
+RERANK_POOL = 40
 NEO4J_SECRET = "trial-graph/neo4j"          # owned by trial_graph
 DESCRIPTION = ("What the 20 trial protocols actually say: eligibility wording, study "
-               "design, endpoint definitions, safety and adverse event sections, and the "
-               "values inside protocol tables. Answers by retrieving passages; narrows to "
-               "one protocol only when the question includes that protocol's docId. "
-               "Does not know sponsors, sites or registry facts.")
+               "design, endpoint definitions, dosing, safety and adverse event sections, "
+               "and the values inside protocol tables. Answers by retrieving passages. "
+               "Knows each protocol by NCT number, acronym (IMbrave150, STEP 1, "
+               "PIONEER 4, ENSEMBLE 2 ...) and drug and condition, and narrows to it "
+               "itself. Does not know sponsors, sites or other registry facts.")
 BUDGETS = {"max_searches_per_turn": 5, "max_neighbor_calls": 3, "max_table_calls": 3,
            "max_window": 10, "expansion_token_budget": 6000}
 
@@ -72,18 +78,21 @@ def main() -> None:
     print("=== STEP 1: secrets ===")
     openai_arn = config_store.ensure_openai_secret()
     pinecone_arn = config_store.ensure_secret(PINECONE_SECRET, {"api_key": "replace-me"})
+    cohere_arn = config_store.ensure_secret(COHERE_SECRET, {"api_key": "replace-me",
+                                                            "model": "rerank-v3.5"})
     neo4j_arn = _require(NEO4J_SECRET, "trial_graph")
 
     print("\n=== STEP 2: Lambda role ===")
     lambda_role_arn = iam.lambda_role([f"arn:aws:secretsmanager:*:*:secret:{n}"
-                                       for n in (config_store.OPENAI_SECRET,
-                                                 PINECONE_SECRET, NEO4J_SECRET)])
-    iam.tighten_secret_policy([openai_arn, pinecone_arn, neo4j_arn])
+                                       for n in (config_store.OPENAI_SECRET, PINECONE_SECRET,
+                                                 COHERE_SECRET, NEO4J_SECRET)])
+    iam.tighten_secret_policy([openai_arn, pinecone_arn, cohere_arn, neo4j_arn])
 
     print("\n=== STEP 3: tools Lambda ===")
     lambda_arn = lambda_deploy.deploy(lambda_role_arn, {
         "OPENAI_SECRET_ID": config_store.OPENAI_SECRET, "PINECONE_SECRET_ID": PINECONE_SECRET,
-        "NEO4J_SECRET_ID": NEO4J_SECRET, "PINECONE_INDEX": args.pinecone_index})
+        "NEO4J_SECRET_ID": NEO4J_SECRET, "PINECONE_INDEX": args.pinecone_index,
+        "COHERE_SECRET_ID": COHERE_SECRET, "RERANK_POOL": str(RERANK_POOL)})
 
     print("\n=== STEP 4: Gateway ===")
     gw = gateway.create_gateway(iam.gateway_role(lambda_arn))
@@ -123,7 +132,7 @@ def main() -> None:
         "gateway_url": gw["gatewayUrl"], "gateway_arn": gw["gatewayArn"],
         "guardrail": gr, "prompt": prompt, "budgets": BUDGETS}, indent=2))
 
-    for name in (config_store.OPENAI_SECRET, PINECONE_SECRET):
+    for name in (config_store.OPENAI_SECRET, PINECONE_SECRET, COHERE_SECRET):
         unset = config_store.placeholders(name)
         if unset:
             print(f"\nREMINDER: {name} still has placeholder {unset}.")

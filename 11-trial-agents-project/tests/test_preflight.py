@@ -128,3 +128,16 @@ def test_ecr_login_passes_the_password_on_stdin_only(monkeypatch):
     assert seen["args"] == ["docker", "login", "--username", "AWS", "--password-stdin",
                             "1.dkr.ecr.us-east-1.amazonaws.com"]
     assert "s3cr3t-token" not in " ".join(seen["args"]) and seen["input"] == "s3cr3t-token"
+
+
+def test_root_never_reports_actions_as_allowed(capsys):
+    """Root skips the check; the output must not then claim anything passed."""
+    pf.run(needs_gateway=True, session=Session(IAM(), "CloudWatchLogs",
+                                               arn="arn:aws:iam::1:root"), sh=shell())
+    out = capsys.readouterr().out
+    assert "permission check skipped" in out and "allowed" not in out
+
+
+def test_unavailable_simulator_never_reports_actions_as_allowed(capsys):
+    pf.run(needs_gateway=True, session=Session(IAM(simulate_raises=True)), sh=shell())
+    assert "allowed" not in capsys.readouterr().out

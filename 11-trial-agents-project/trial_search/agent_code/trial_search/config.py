@@ -56,11 +56,20 @@ class Settings:
     expansion_token_budget: int
 
     def chat_model(self):
-        """The OpenAI chat model. Temperature is left at the provider default:
-        reasoning models reject a temperature argument outright."""
+        """The OpenAI chat model, over the RESPONSES API.
+
+        ChatOpenAI calls Chat Completions by default. OpenAI's models page
+        lists the latest models (GPT-6) as available via the Responses API
+        and does not mention Chat Completions, so a GPT-6 model could fail on
+        every call through the default endpoint. The Responses API serves
+        every current model, so it is used unconditionally.
+
+        Temperature is left at the provider default: reasoning models reject
+        a temperature argument outright.
+        """
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(model=self.openai_model, api_key=self.openai_api_key,
-                          timeout=120, max_retries=2)
+                          use_responses_api=True, timeout=120, max_retries=2)
 
 
 def _parameters(ssm, path: str) -> dict[str, str]:

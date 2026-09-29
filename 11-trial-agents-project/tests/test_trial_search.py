@@ -124,8 +124,13 @@ def test_table_rows_from_the_right_document_only(lam):
 
 # ── the agent loop's budgets ─────────────────────────────────────────────
 class S(BaseModel):
+    """Mirrors the Gateway's semantic_search inputSchema (infra/gateway.py). A
+    field missing here is silently dropped before the Lambda — doc_id and
+    content_type once were, so no scoped search was ever exercised."""
     query: str
     top_k: int = 8
+    content_type: str | None = None
+    doc_id: str | None = None
 
 
 class E(BaseModel):
@@ -187,3 +192,37 @@ def test_tiny_token_budget_holds(lam):
 def test_decision_without_search_is_not_executed(lam):
     _, response, _ = run_loop(lam, [DECIDE])
     assert response.result_shape == "not_executed"
+
+
+def test_unknown_content_type_is_rejected_not_searched(lam):
+    """The Gateway cannot enforce an enum. Without this check, a typo becomes a
+    filter matching nothing, reported as 'the corpus does not cover this'."""
+    r = lam.semantic_search({"query": "q", "content_type": "tables"})
+    assert r["error"] and "table_summary" in r["detail"]
+    assert "passages" in lam.semantic_search({"query": "q", "content_type": "formula"})
+
+
+def test_every_search_is_recorded_as_it_ran(lam):
+    """The analyst's Queries tab: each search's query, scope, filter, the recall
+    pool and what was kept — taken from the executed call, not from the model.
+    A failed search is recorded too, marked as failed."""
+    doc = "nct03434379-hepatocellular-atezo-bev"
+    _, response, sent = run_loop(lam, [
+        call(P + "semantic_search", query="exclusion criteria", doc_id=doc, top_k=8),
+        call(P + "semantic_search", query="dose table", content_type="tables"),   # invalid filter
+        DECIDE])
+    first, second = response.searches
+    assert (first.query, first.doc_id, first.top_k, first.succeeded) == ("exclusion criteria", doc, 8, True)
+    assert first.results == len([p for p in response.passages if p.origin == "search"]) > 0
+    assert first.candidates >= first.results and first.reranked is not None
+    assert (second.query, second.content_type, second.succeeded) == ("dose table", "tables", False)
+    assert [a["query"] for n, a in sent if n == "semantic_search"] == ["exclusion criteria", "dose table"]
+
+
+def test_search_fixture_matches_the_gateway_schema():
+    """The loop tests feed arguments through S. If S lacks a field the Gateway
+    accepts, that field silently vanishes and scoped searches go untested."""
+    from test_payloads import infra
+    gateway = infra("trial_search", "gateway")
+    search = next(t for t in gateway.TOOL_SCHEMA if t["name"] == "semantic_search")
+    assert set(S.model_fields) == set(search["inputSchema"]["properties"])
