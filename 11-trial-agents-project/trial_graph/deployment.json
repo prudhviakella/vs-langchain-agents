@@ -1,0 +1,22 @@
+{
+  "runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:234360896963:runtime/trial_graph-Z3tPk8FeC7",
+  "param_prefix": "/trial-agents/trial_graph",
+  "gateway_url": "https://trial-graph-gateway-o0imfbpaiv.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+  "gateway_arn": "arn:aws:bedrock-agentcore:us-east-1:234360896963:gateway/trial-graph-gateway-o0imfbpaiv",
+  "guardrail": {
+    "id": "cgsmh30cjk1o",
+    "arn": "arn:aws:bedrock:us-east-1:234360896963:guardrail/cgsmh30cjk1o",
+    "version": "1"
+  },
+  "prompt": {
+    "id": "SIRH9RT7EV",
+    "arn": "arn:aws:bedrock:us-east-1:234360896963:prompt/SIRH9RT7EV",
+    "version": "2",
+    "variables": []
+  },
+  "limits": {
+    "row_cap": 500,
+    "graph_node_cap": 500,
+    "max_repairs": 3
+  }
+}

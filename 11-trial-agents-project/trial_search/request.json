@@ -1,0 +1,3 @@
+{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{
+  "role":"user","messageId":"msg-rerank-1",
+  "parts":[{"kind":"text","text":"What are the exclusion criteria of the IMbrave150 trial?"}]}}}

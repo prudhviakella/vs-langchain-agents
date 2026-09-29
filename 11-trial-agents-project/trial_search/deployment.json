@@ -1,0 +1,29 @@
+{
+  "runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:234360896963:runtime/trial_search-3kibQFE3Ag",
+  "param_prefix": "/trial-agents/trial_search",
+  "gateway_url": "https://trial-search-gateway-9nwfguuuuc.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+  "gateway_arn": "arn:aws:bedrock-agentcore:us-east-1:234360896963:gateway/trial-search-gateway-9nwfguuuuc",
+  "guardrail": {
+    "id": "cgsmh30cjk1o",
+    "arn": "arn:aws:bedrock:us-east-1:234360896963:guardrail/cgsmh30cjk1o",
+    "version": "1"
+  },
+  "prompt": {
+    "id": "96B8CZZKBS",
+    "arn": "arn:aws:bedrock:us-east-1:234360896963:prompt/96B8CZZKBS",
+    "version": "5",
+    "variables": [
+      "expansion_token_budget",
+      "max_neighbor_calls",
+      "max_searches_per_turn",
+      "max_table_calls"
+    ]
+  },
+  "budgets": {
+    "max_searches_per_turn": 5,
+    "max_neighbor_calls": 3,
+    "max_table_calls": 3,
+    "max_window": 10,
+    "expansion_token_budget": 6000
+  }
+}

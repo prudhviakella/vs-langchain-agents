@@ -1,0 +1,16 @@
+{"doc": "nct03434379-hepatocellular-atezo-bev",
+ "note": "The 26 passages trial_search returned for 'What are the exclusion criteria of the IMbrave150 trial?' in production (trace 2026-09-27). chunk suffix, position, origin, vector score, Cohere rerank_score. Texts come from the Pinecone export.",
+ "passages": [
+  ["b3206c774d5fda4b", 0, "search", 0.5290, 0.6228], ["be265ca1872f0293", 3, "search", 0.4991, 0.5390],
+  ["7a2a56fa2f1495e6", 4, "search", 0.5029, 0.6578], ["54f794fd91a99ca0", 22, "search", 0.5103, 0.3176],
+  ["5d37090cc29dc4a4", 23, "search", 0.5556, 0.5008], ["67c9821df5eeaf01", 24, "search", 0.5161, 0.4291],
+  ["b363aa51f657896d", 25, "search", 0.6224, 0.8329], ["16b3a51198f90418", 26, "search", 0.4997, 0.3851],
+  ["9d66dfc489af0e90", 27, "search", 0.5314, 0.4705], ["92725e9179882cc5", 28, "search", 0.4934, 0.4878],
+  ["4e1a1e09e4f1cae1", 29, "search", 0.5212, 0.4594], ["8d9532a21cd45933", 30, "search", 0.5163, 0.4558],
+  ["eedcd00430955f4d", 95, "neighbor", null, null], ["42ecd8d625c17f9c", 96, "neighbor", null, null],
+  ["6d34f13f8ad93536", 97, "search", 0.5272, 0.4737], ["f9b55fbec9096815", 98, "neighbor", null, null],
+  ["7c0bfd00c34655dd", 99, "neighbor", null, null], ["3f631bfffce95354", 100, "search", 0.6932, 0.9006],
+  ["f016bc10816c1bd7", 101, "search", 0.5083, 0.6488], ["32491829480dbba7", 102, "search", 0.5508, 0.7114],
+  ["47cf5c238f992845", 103, "search", 0.5652, 0.6887], ["8b8f6b1e751640d7", 104, "search", 0.6851, 0.7476],
+  ["afb463f3c0fc2e6e", 105, "search", 0.6528, 0.7075], ["fb165cc26eb1fef3", 106, "neighbor", null, null],
+  ["cf0f425b9375bb14", 107, "neighbor", null, null], ["8a72c3c33f48ff92", 241, "search", 0.4947, 0.2543]]}
