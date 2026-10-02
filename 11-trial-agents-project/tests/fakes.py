@@ -69,7 +69,17 @@ def mcp_tool(prefix: str, name: str, lambda_handler, schema, sent=None):
 
 
 class GuardrailClient:
-    """ApplyGuardrail stand-in. Intervenes when the text contains a trigger."""
+    """ApplyGuardrail stand-in, shaped like the real response.
+
+    a trigger word   -> GUARDRAIL_INTERVENED, a content filter BLOCKED,
+                        outputs = the blocked message
+    an email address -> GUARDRAIL_INTERVENED, a PII entity ANONYMIZED,
+                        outputs = the text with the email replaced by {EMAIL}
+    otherwise        -> NONE
+    Both interventions carry "assessments", as the real API does: only an
+    assessment with action BLOCKED makes it a block.
+    """
+    EMAIL = __import__("re").compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")   # never ends on a dot
 
     def __init__(self, triggers=("BLOCKME",)):
         self.triggers, self.calls = triggers, []
@@ -79,7 +89,14 @@ class GuardrailClient:
         self.calls.append((source, text))
         if any(t in text for t in self.triggers):
             return {"action": "GUARDRAIL_INTERVENED",
-                    "outputs": [{"text": f"blocked-{source.lower()}"}]}
+                    "outputs": [{"text": f"blocked-{source.lower()}"}],
+                    "assessments": [{"contentPolicy": {"filters": [
+                        {"type": "MISCONDUCT", "confidence": "HIGH", "action": "BLOCKED"}]}}]}
+        if self.EMAIL.search(text):
+            return {"action": "GUARDRAIL_INTERVENED",
+                    "outputs": [{"text": self.EMAIL.sub("{EMAIL}", text)}],
+                    "assessments": [{"sensitiveInformationPolicy": {"piiEntities": [
+                        {"type": "EMAIL", "match": self.EMAIL.search(text).group(), "action": "ANONYMIZED"}]}}]}
         return {"action": "NONE", "outputs": []}
 
 

@@ -102,6 +102,20 @@ this module raises GuardrailBlocked.
 
 The caller (core.orchestrate()) converts that exception into an
 unanswerable TrialGraphResponse.
+
+BLOCKED VERSUS MASKED
+---------------------
+
+GUARDRAIL_INTERVENED covers two different outcomes:
+
+    a policy BLOCKED the text     -> check() raises GuardrailBlocked
+    personal data was MASKED      -> check() returns the masked text
+    (an email -> {EMAIL})            and the turn continues with it
+
+Only an assessment with action BLOCKED is a block. Treating every
+intervention as a block would refuse a question for containing an email,
+and every answer quoting a protocol's contact phone number.
+
 """
 
 from __future__ import annotations
@@ -190,7 +204,7 @@ def check(
     guardrail_id: str,
     guardrail_version: str,
     client=None
-) -> None:
+) -> str:
     """Check text against the configured Bedrock Guardrail.
 
     Parameters
@@ -218,17 +232,24 @@ def check(
 
         Primarily useful for testing so a mock client can be injected.
 
+    Returns
+    -------
+    str
+        The text to use: unchanged, or with personal data masked
+        (an email -> {EMAIL}).
+
     Raises
     ------
     GuardrailBlocked
-        When ApplyGuardrail returns GUARDRAIL_INTERVENED.
+        When a policy BLOCKED the text. Masking personal data also
+        returns GUARDRAIL_INTERVENED, but is not a block.
     """
 
     # Empty text does not need to be checked.
     #
     # This also avoids unnecessary Bedrock API calls.
     if not text or not text.strip():
-        return
+        return text
 
     # Create a tracing span around the guardrail API call.
     #
@@ -275,9 +296,18 @@ def check(
             action=response.get("action")
         )
 
-    # Bedrock uses GUARDRAIL_INTERVENED when the configured guardrail
-    # decides that the content should be blocked.
-    if response.get("action") == "GUARDRAIL_INTERVENED":
+    # Bedrock uses GUARDRAIL_INTERVENED both when the configured guardrail
+    # BLOCKS the content and when it only MASKS personal data.
+
+    # Nothing was masked either: use the text as it is.
+    if response.get("action") != "GUARDRAIL_INTERVENED":
+        return text
+
+    # A policy BLOCKED the text.
+    #
+    # Masking personal data also reports GUARDRAIL_INTERVENED; only an
+    # assessment with action BLOCKED is a block.
+    if _blocked(response.get("assessments", [])):
 
         # Extract the guardrail's configured response message.
         #
@@ -305,6 +335,57 @@ def check(
             source,
             message
         )
+    # Only personal data was masked (an email -> {EMAIL}).
+    #
+    # Continue with the masked text; the caller uses it in place of the
+    # original.
+    log.info(
+        "guardrail masked personal data in %s",
+        source,
+    )
+    return next(
+        (
+            output.get("text")
+            for output in response.get("outputs", [])
+            if output.get("text")
+        ),
+        text,
+    )
+
+# ===========================================================================
+# Blocked versus masked
+# ===========================================================================
+
+def _blocked(
+    node,
+) -> bool:
+    """True if any policy BLOCKED — as opposed to only masking.
+
+    ApplyGuardrail reports GUARDRAIL_INTERVENED both when a policy blocks
+    the text and when it only masks personal data (an email -> {EMAIL}).
+    Which one happened is in the assessments: each finding carries an
+    action — BLOCKED, ANONYMIZED or NONE — nested per policy (content
+    filters, denied topics, words, personal data).
+    """
+
+    # A policy entry that blocked.
+    if isinstance(node, dict):
+        return node.get("action") == "BLOCKED" or any(
+            _blocked(value)
+            for value in node.values()
+        )
+
+    # A list of policy entries: blocked if any one of them blocked.
+    if isinstance(node, list):
+        return any(
+            _blocked(value)
+            for value in node
+        )
+
+    return False
+
+
+
 
 
 def _text(content) -> str:
@@ -427,6 +508,47 @@ class GuardrailMiddleware(AgentMiddleware):
             else ""
         )
 
+    def _masked(
+        self,
+        state,
+        checked: str,
+    ):
+        """Replace the question with its masked version, if anything was masked.
+
+        check() returns the question unchanged, or with personal data
+        masked (an email -> {EMAIL}). A masked question REPLACES the
+        original — same message id, so the messages reducer overwrites it
+        and the model never sees the email or phone number.
+        """
+
+        # The latest human message — the question that was checked.
+        human = [
+            message
+            for message in state.get(
+                "messages",
+                []
+            )
+            if isinstance(
+                message,
+                HumanMessage,
+            )
+        ]
+
+        # Nothing was masked: no state update.
+        if not human or checked == _text(human[-1].content):
+            return None
+
+        # Personal data was masked: overwrite the question in state.
+        return {
+            "messages": [
+                HumanMessage(
+                    content=checked,
+                    id=human[-1].id,
+                )
+            ]
+        }
+
+
     def before_agent(
         self,
         state,
@@ -442,16 +564,21 @@ class GuardrailMiddleware(AgentMiddleware):
 
         # Send it to Bedrock ApplyGuardrail as INPUT.
         #
-        # If the guardrail intervenes, check() raises GuardrailBlocked.
-        check(
+        # If a policy blocks, check() raises GuardrailBlocked; if personal
+        # data is masked, it returns the masked question.
+        checked = check(
             question,
             "INPUT",
             *self.args,
             client=self.client
         )
 
-        # None means the middleware does not modify agent state.
-        return None
+        # Personal data masked: the masked question replaces the original.
+        # Nothing masked: None, no middleware state update.
+        return self._masked(
+            state,
+            checked,
+        )
 
     async def abefore_agent(
         self,
@@ -467,7 +594,7 @@ class GuardrailMiddleware(AgentMiddleware):
         """
 
         # Run synchronous Bedrock API call in a worker thread.
-        await asyncio.to_thread(
+        checked = await asyncio.to_thread(
             check,
             self._question(state),
             "INPUT",
@@ -475,8 +602,12 @@ class GuardrailMiddleware(AgentMiddleware):
             client=self.client
         )
 
-        # No state modification.
-        return None
+        # Personal data masked: the masked question replaces the original.
+        # Nothing masked: None, no middleware state update.
+        return self._masked(
+            state,
+            checked,
+        )
 
     # ══════════════════════════════════════════════════════════════════
     # OUTPUT

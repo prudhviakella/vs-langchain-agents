@@ -53,6 +53,12 @@ class SupervisorDecision(BaseModel):
                     "'the sponsor of IMbrave150 (NCT03434379)'). Empty when "
                     "the question already stands alone.",
     )
+    out_of_scope: bool = Field(
+        default=False,
+        description="True when the question is not about clinical trials at all "
+                    "(recipes, code, general knowledge, chit-chat). Set it with "
+                    "answerable=false and no calls; the reply is a fixed message.",
+    )
     from_conversation: bool = Field(
         default=False,
         description="True only when the answer comes entirely from the "

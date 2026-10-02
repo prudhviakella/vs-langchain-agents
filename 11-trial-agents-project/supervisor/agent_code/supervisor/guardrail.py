@@ -61,21 +61,42 @@ class GuardrailBlocked(Exception):
         self.source, self.message = source, message
 
 
+def _blocked(node) -> bool:
+    """True if any policy in the assessments BLOCKED — as opposed to only
+    masking. ApplyGuardrail reports each finding with an action: BLOCKED,
+    ANONYMIZED or NONE, nested per policy (content filters, denied topics,
+    words, personal data)."""
+    if isinstance(node, dict):
+        return node.get("action") == "BLOCKED" or any(_blocked(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_blocked(v) for v in node)
+    return False
+
+
 def check(text: str, source: str, guardrail_id: str, guardrail_version: str,
-          client=None) -> None:
-    """Raise GuardrailBlocked if the guardrail intervenes on `text`."""
+          client=None) -> str:
+    """The text to use: unchanged, or with personal data masked.
+
+    Raises GuardrailBlocked only when a policy BLOCKED. A guardrail that only
+    masked (an email -> {EMAIL}) also reports GUARDRAIL_INTERVENED; treating
+    that as a block would refuse a question for containing an email, and
+    refuse every answer quoting a protocol's contact phone number.
+    """
     if not text or not text.strip():
-        return
+        return text
     with span(f"guardrail.{source.lower()}", chars=len(text)) as sp:
         response = (client or _bedrock()).apply_guardrail(
             guardrailIdentifier=guardrail_id, guardrailVersion=guardrail_version,
             source=source, content=[{"text": {"text": text}}])
         set_span_attrs(sp, action=response.get("action"))
-    if response.get("action") == "GUARDRAIL_INTERVENED":
-        message = next((o.get("text") for o in response.get("outputs", []) if o.get("text")),
-                       "This request was blocked by a content policy.")
-        log.warning("guardrail intervened on %s", source)
-        raise GuardrailBlocked(source, message)
+    if response.get("action") != "GUARDRAIL_INTERVENED":
+        return text
+    output = next((o.get("text") for o in response.get("outputs", []) if o.get("text")), None)
+    if _blocked(response.get("assessments", [])):
+        log.warning("guardrail blocked %s", source)
+        raise GuardrailBlocked(source, output or "This request was blocked by a content policy.")
+    log.info("guardrail masked personal data in %s", source)
+    return output or text
 
 
 def _text(content) -> str:
@@ -98,18 +119,28 @@ class GuardrailMiddleware(AgentMiddleware):
         self.client = client
 
     # ── INPUT ───────────────────────────────────────────────────────────
-    def _question(self, state) -> str:
+    def _question(self, state):
         human = [m for m in state.get("messages", []) if isinstance(m, HumanMessage)]
-        return _text(human[-1].content) if human else ""
+        return human[-1] if human else None
+
+    def _masked(self, question, checked: str):
+        """If personal data was masked, the masked question REPLACES the
+        original — same message id, so the messages reducer overwrites it and
+        the model never sees the email or phone number."""
+        if question is None or checked == _text(question.content):
+            return None
+        return {"messages": [HumanMessage(content=checked, id=question.id)]}
 
     def before_agent(self, state, runtime):
-        check(self._question(state), "INPUT", *self.args, client=self.client)
-        return None
+        question = self._question(state)
+        text = _text(question.content) if question else ""
+        return self._masked(question, check(text, "INPUT", *self.args, client=self.client))
 
     async def abefore_agent(self, state, runtime):
-        await asyncio.to_thread(check, self._question(state), "INPUT", *self.args,
-                                client=self.client)
-        return None
+        question = self._question(state)
+        text = _text(question.content) if question else ""
+        checked = await asyncio.to_thread(check, text, "INPUT", *self.args, client=self.client)
+        return self._masked(question, checked)
 
     # ── OUTPUT ──────────────────────────────────────────────────────────
     def _authored(self, state) -> str:

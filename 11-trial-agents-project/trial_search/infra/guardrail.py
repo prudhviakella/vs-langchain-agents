@@ -30,10 +30,34 @@ Detects instructions smuggled into the analyst's input ("ignore your
 instructions and ..."). It applies to input only — outputStrength must be
 NONE — which is why the agents check the question with source=INPUT.
 
+DENIED TOPICS — SPECIFIC RISKS, NOT "EVERYTHING OFF-TOPIC"
+
+Four themes this platform must never engage with, each defined POSITIVELY,
+as AWS requires ("avoid negative definitions" — "all contents except
+medical information" is AWS's own example of what not to write):
+
+    Personal medical advice      a decision for a specific person
+    Deceiving trial staff        hiding or faking information to be accepted
+    Participant identification   finding or contacting trial participants
+    Investment advice            trading on trial information
+
+Off-topic questions in general (recipes, code) are the supervisor prompt's
+job: it sets out_of_scope and the platform replies with a fixed message. A
+negatively defined topic would also catch "remember that I focus on phase
+3" and "do a deeper analysis", which never mention a trial.
+
+PERSONAL DATA IS MASKED, NOT BLOCKED
+
+Emails and phone numbers become {EMAIL} and {PHONE}, in questions and
+answers. Protocols print medical monitors' contact details; blocking would
+refuse every answer that quotes one. Names are left alone: investigators
+and sponsors are named in the registry.
+
 WHAT THIS DOES NOT DO
 
-    No PII policy. The corpus holds no patient-level data. No denied topics:
-    whether a question is in scope is the prompt's job, not a keyword list's.
+    It does not decide whether a question is in scope — the supervisor does.
+    It does not use the STANDARD topic tier: questions are in English, which
+    the CLASSIC tier covers.
 """
 import time
 
@@ -42,7 +66,9 @@ import boto3
 bedrock = boto3.client("bedrock")
 
 NAME = "trial-agents-guardrail"
-BLOCKED_INPUT = "This request falls outside what this assistant can help with."
+BLOCKED_INPUT = ("This assistant answers questions about the 20 clinical trials in its registry "
+                 "and protocols. It cannot give personal medical, investment or enrolment advice, "
+                 "or help identify trial participants.")
 BLOCKED_OUTPUT = ("The answer to this question could not be shown because it did not "
                   "pass a content policy. Try rephrasing the question.")
 FILTERS = [
@@ -55,14 +81,68 @@ FILTERS = [
 ]
 
 
+def _topic(name, definition, examples):
+    return {"name": name, "definition": definition, "examples": examples, "type": "DENY",
+            "inputEnabled": True, "outputEnabled": True, "inputAction": "BLOCK", "outputAction": "BLOCK"}
+
+
+TOPICS = [
+    _topic("Personal medical advice",
+           "Recommendations about diagnosis, treatment, medication, dosing, or whether to start or "
+           "stop a therapy for a specific person, including the person asking.",
+           ["Should I stop taking my semaglutide?",
+            "What dose of atezolizumab should my father take?",
+            "Do my symptoms mean I have hepatitis B?",
+            "Is this drug safe for me while I am pregnant?",
+            "Should my mother join a cancer trial instead of having chemotherapy?"]),
+    # Defined by the DECEPTION, not by eligibility. The first version named
+    # IMbrave150 and used "enrol", "qualify" and "screening" in its examples;
+    # the classifier learned "IMbrave150 + eligibility" and blocked "What are
+    # the exclusion criteria of the IMbrave150 trial?" — the platform's core
+    # question. Examples here name no trial and use no eligibility vocabulary.
+    _topic("Deceiving trial staff",
+           "Help with lying to, misleading or hiding information from doctors or study staff, "
+           "such as concealing an illness or faking a test result, to be accepted into a study.",
+           ["How can I hide my liver disease from the study doctor?",
+            "What should I lie about so they accept me?",
+            "How do I fake a lower blood pressure reading at my visit?",
+            "Can I conceal my past chemotherapy from the investigators?"]),
+    _topic("Participant identification",
+           "Attempts to identify, locate, contact or learn personal details about individual people "
+           "who took part in a clinical trial.",
+           ["Who were the patients enrolled at the Seoul site?",
+            "Give me the names of participants in STEP 1.",
+            "How can I contact people who were in the PIONEER 4 trial?",
+            "Which patient had the serious adverse event at Georgetown?"]),
+    _topic("Investment advice",
+           "Recommendations to buy, sell or hold shares or other securities, or predictions of share "
+           "prices, based on clinical trial information.",
+           ["Should I buy Novo Nordisk stock after STEP 1?",
+            "Will Roche shares rise because of IMbrave150?",
+            "Is Moderna a good investment based on its trials?"]),
+]
+PII = [{"type": t, "action": "ANONYMIZE", "inputAction": "ANONYMIZE", "outputAction": "ANONYMIZE",
+        "inputEnabled": True, "outputEnabled": True} for t in ("EMAIL", "PHONE")]
+
+
 def _policy(g: dict) -> tuple:
+    """Everything the deploy controls, in a comparable form: a change to any
+    filter, topic, example phrase, personal-data rule or message counts."""
     filters = {(f["type"], f["inputStrength"], f["outputStrength"])
                for f in g.get("contentPolicy", {}).get("filters", [])}
-    return (frozenset(filters), g.get("blockedInputMessaging"), g.get("blockedOutputsMessaging"))
+    topics = {(t["name"], t["definition"], tuple(t.get("examples", [])),
+               t.get("inputAction", "BLOCK"), t.get("outputAction", "BLOCK"))
+              for t in g.get("topicPolicy", {}).get("topics", [])}
+    pii = {(e["type"], e.get("inputAction", e.get("action")), e.get("outputAction", e.get("action")))
+           for e in g.get("sensitiveInformationPolicy", {}).get("piiEntities", [])}
+    return (frozenset(filters), frozenset(topics), frozenset(pii),
+            g.get("blockedInputMessaging"), g.get("blockedOutputsMessaging"))
 
 
-_DESIRED = (frozenset((f["type"], f["inputStrength"], f["outputStrength"]) for f in FILTERS),
-            BLOCKED_INPUT, BLOCKED_OUTPUT)
+_DESIRED = _policy({"contentPolicy": {"filters": FILTERS},
+                    "topicPolicy": {"topics": TOPICS},
+                    "sensitiveInformationPolicy": {"piiEntities": PII},
+                    "blockedInputMessaging": BLOCKED_INPUT, "blockedOutputsMessaging": BLOCKED_OUTPUT})
 
 
 def _wait(guardrail_id: str) -> None:
@@ -86,6 +166,8 @@ def _find() -> dict | None:
 
 def ensure_guardrail() -> dict:
     config = dict(contentPolicyConfig={"filtersConfig": FILTERS},
+                  topicPolicyConfig={"topicsConfig": TOPICS},
+                  sensitiveInformationPolicyConfig={"piiEntitiesConfig": PII},
                   blockedInputMessaging=BLOCKED_INPUT, blockedOutputsMessaging=BLOCKED_OUTPUT)
 
     # STEP 1 — the DRAFT matches the policy above

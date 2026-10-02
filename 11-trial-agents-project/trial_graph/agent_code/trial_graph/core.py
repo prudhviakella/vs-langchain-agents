@@ -454,6 +454,8 @@ class CypherMiddleware(AgentMiddleware):
             _record()
         """
 
+        # Step1
+        # Input validation
         # Apply all BEFORE-execution controls.
         gated = self._gate(request)
 
@@ -461,8 +463,13 @@ class CypherMiddleware(AgentMiddleware):
         if isinstance(gated, ToolMessage):
             return gated
 
+        # Step2
+        # Execute Tool
+        response = handler(gated)
+
+        #Step3
         # Otherwise execute the tool and process its result.
-        return self._record(gated, handler(gated))
+        return self._record(gated, response)
 
     async def awrap_tool_call(self, request, handler):
         """Asynchronous version used by ainvoke()."""

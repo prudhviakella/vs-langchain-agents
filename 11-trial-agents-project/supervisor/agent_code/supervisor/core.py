@@ -609,6 +609,13 @@ def evidence(captured_results: dict) -> str:
     return f"<untrusted_data>\n{body}\n</untrusted_data>"
 
 
+OUT_OF_SCOPE = ("I can only help with questions about the 20 clinical trials in this "
+                "platform — their sponsors, sites, phases, conditions and outcomes from the "
+                "registry, and what their protocols say about eligibility, design, endpoints, "
+                "dosing and safety. Try asking, for example, \"What are the exclusion criteria "
+                "of the IMbrave150 trial?\"")
+
+
 async def _compose(state: GraphState) -> dict:
     """PROBABILISTIC, deliberately separate from _route: structured output
     and token-by-token streaming are mutually exclusive in one call.
@@ -619,6 +626,11 @@ async def _compose(state: GraphState) -> dict:
             reads, and it is produced outside the agent loop, so the
             loop's middleware never sees it
     """
+    # An out-of-scope question gets one fixed reply: no composer call, no tokens,
+    # and no chance of the model answering it from general knowledge.
+    if state.get("decision") is not None and state["decision"].out_of_scope:
+        with span("supervisor.compose", out_of_scope=True):
+            return {"composed_answer": OUT_OF_SCOPE}
     from .config import render
     s = settings()
     decision = state.get("decision")
@@ -633,7 +645,9 @@ async def _compose(state: GraphState) -> dict:
     # "[{'type': 'text', 'text': ..., 'phase': 'final_answer'}]". .text joins
     # only the text blocks.
     text = response.text() if callable(response.text) else response.text
-    await asyncio.to_thread(check, text, "OUTPUT", s.guardrail_id, s.guardrail_version)
+    # check() returns the answer to show: unchanged, or with personal data
+    # masked — protocols print medical monitors' emails and phone numbers.
+    text = await asyncio.to_thread(check, text, "OUTPUT", s.guardrail_id, s.guardrail_version)
     return {"composed_answer": text}
 
 

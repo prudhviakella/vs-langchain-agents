@@ -6,7 +6,7 @@
   "guardrail": {
     "id": "cgsmh30cjk1o",
     "arn": "arn:aws:bedrock:us-east-1:234360896963:guardrail/cgsmh30cjk1o",
-    "version": "1"
+    "version": "3"
   },
   "prompt": {
     "id": "96B8CZZKBS",
