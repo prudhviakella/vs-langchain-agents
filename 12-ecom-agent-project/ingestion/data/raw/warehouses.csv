@@ -1,0 +1,6 @@
+warehouse_id,warehouse_name,address,city,state,zip_code,country,phone,email,capacity_sqft,manager_name,operating_since,lat,lon
+1,East Coast Distribution,5000 Industrial Pkwy,Newark,NJ,7102,USA,555-0201,ec@ecom.com,150000,Sarah Johnson,2020-03-15,40.589636,-74.084971
+2,West Coast Hub,1200 Logistics Blvd,Los Angeles,CA,90001,USA,555-0202,wc@ecom.com,200000,Michael Chen,2019-07-01,34.0522,-118.2437
+3,Midwest Center,800 Commerce Drive,Chicago,IL,60601,USA,555-0203,mw@ecom.com,120000,Emily Davis,2021-01-10,41.8781,-87.6298
+4,Southern Depot,3400 Freight Ave,Dallas,TX,75201,USA,555-0204,sw@ecom.com,180000,James Wilson,2020-09-15,32.791766,-96.852925
+5,Pacific Northwest,900 Harbor Way,Seattle,WA,98101,USA,555-0205,pn@ecom.com,90000,Lisa Park,2022-02-20,47.503995,-122.447593

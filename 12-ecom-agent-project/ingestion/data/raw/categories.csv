@@ -1,0 +1,57 @@
+category_id,category_name,parent_category_id,category_level,description,created_at
+1,Electronics,,1,Electronics products and accessories,2023-01-01 10:00:00
+2,Clothing & Apparel,,1,Fashion and apparel,2023-01-01 10:00:00
+3,Home & Garden,,1,"Home, garden and furniture",2023-01-01 10:00:00
+4,Sports & Outdoors,,1,Sports equipment and outdoor gear,2023-01-01 10:00:00
+5,Beauty & Personal Care,,1,Beauty products and personal care,2023-01-01 10:00:00
+6,Books & Media,,1,"Books, movies, music and games",2023-01-01 10:00:00
+7,Toys & Games,,1,"Toys, games and hobbies",2023-01-01 10:00:00
+8,Food & Grocery,,1,"Food, beverages and grocery",2023-01-01 10:00:00
+9,Automotive,,1,Auto parts and accessories,2023-01-01 10:00:00
+10,Health & Wellness,,1,Health products and supplements,2023-01-01 10:00:00
+11,Smartphones,1,2,Mobile phones and accessories,2023-01-01 10:00:00
+12,Laptops & Computers,1,2,"Laptops, desktops and peripherals",2023-01-01 10:00:00
+13,TV & Audio,1,2,"Televisions, speakers and audio",2023-01-01 10:00:00
+14,Cameras,1,2,Digital cameras and photography,2023-01-01 10:00:00
+15,Men's Clothing,2,2,Men's fashion and apparel,2023-01-01 10:00:00
+16,Women's Clothing,2,2,Women's fashion and apparel,2023-01-01 10:00:00
+17,Kids' Clothing,2,2,Children's clothing,2023-01-01 10:00:00
+18,Shoes & Footwear,2,2,"Shoes, boots and sandals",2023-01-01 10:00:00
+19,Furniture,3,2,Home furniture and decor,2023-01-01 10:00:00
+20,Kitchen & Dining,3,2,Kitchen appliances and dining,2023-01-01 10:00:00
+21,Bedding & Bath,3,2,"Bedding, towels and bath",2023-01-01 10:00:00
+22,Garden & Outdoor,3,2,Gardening tools and outdoor,2023-01-01 10:00:00
+23,Exercise & Fitness,4,2,Gym equipment and fitness gear,2023-01-01 10:00:00
+24,Outdoor Recreation,4,2,"Camping, hiking and outdoor",2023-01-01 10:00:00
+25,Team Sports,4,2,Team sports equipment,2023-01-01 10:00:00
+26,Skincare,5,2,Face and body skincare,2023-01-01 10:00:00
+27,Hair Care,5,2,"Shampoo, conditioner and styling",2023-01-01 10:00:00
+28,Makeup,5,2,Cosmetics and makeup,2023-01-01 10:00:00
+29,Fiction,6,2,Fiction and literature,2023-01-01 10:00:00
+30,Non-Fiction,6,2,Non-fiction and self-help,2023-01-01 10:00:00
+31,Video Games,6,2,Console and PC games,2023-01-01 10:00:00
+32,Board Games,7,2,Board games and puzzles,2023-01-01 10:00:00
+33,Action Figures,7,2,Action figures and collectibles,2023-01-01 10:00:00
+34,Building Toys,7,2,LEGO and building sets,2023-01-01 10:00:00
+35,Snacks & Candy,8,2,"Snacks, chips and confectionery",2023-01-01 10:00:00
+36,Beverages,8,2,"Drinks, juices and water",2023-01-01 10:00:00
+37,Car Accessories,9,2,Interior and exterior car accessories,2023-01-01 10:00:00
+38,Car Electronics,9,2,"GPS, dashcams and car audio",2023-01-01 10:00:00
+39,Vitamins & Supplements,10,2,"Vitamins, minerals and supplements",2023-01-01 10:00:00
+40,Medical Devices,10,2,Blood pressure monitors and thermometers,2023-01-01 10:00:00
+41,iPhone,11,3,Apple iPhones,2023-01-01 10:00:00
+42,Android Phones,11,3,Android smartphones,2023-01-01 10:00:00
+43,Gaming Laptops,12,3,High-performance gaming laptops,2023-01-01 10:00:00
+44,Ultrabooks,12,3,Thin and light laptops,2023-01-01 10:00:00
+45,4K TVs,13,3,4K Ultra HD televisions,2023-01-01 10:00:00
+46,Soundbars,13,3,Soundbars and home theatre,2023-01-01 10:00:00
+47,DSLR Cameras,14,3,Digital SLR cameras,2023-01-01 10:00:00
+48,Action Cameras,14,3,GoPro and action cameras,2023-01-01 10:00:00
+49,Running Shoes,18,3,Running and athletic shoes,2023-01-01 10:00:00
+50,Casual Shoes,18,3,Everyday casual footwear,2023-01-01 10:00:00
+51,Sofas & Couches,19,3,"Sofas, loveseats and sectionals",2023-01-01 10:00:00
+52,Beds & Frames,19,3,Bed frames and headboards,2023-01-01 10:00:00
+53,Protein & Supplements,39,3,Protein powders and pre-workout,2023-01-01 10:00:00
+54,Yoga & Pilates,23,3,"Yoga mats, blocks and straps",2023-01-01 10:00:00
+55,Treadmills,23,3,Treadmills and running machines,2023-01-01 10:00:00
+56,Face Moisturizers,26,3,Face creams and moisturizers,2023-01-01 10:00:00

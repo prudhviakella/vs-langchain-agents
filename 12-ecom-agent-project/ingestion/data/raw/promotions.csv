@@ -1,0 +1,101 @@
+promotion_id,promotion_name,promotion_type,discount_percent,discount_amount,start_date,end_date,promo_code,min_purchase_amount,max_discount,status,usage_limit,times_used
+12001,Loyalty Reward 1,Percentage,7.9,,2023-01-21 15:40:00,2023-01-26 15:40:00,ATCG##,150,100,Expired,500,261
+12002,Back to School 2,Percentage,44.6,,2023-06-13 23:06:00,2023-07-10 23:06:00,NSEI##,25,50,Active,,17
+12003,Weekend Deal 3,Fixed Amount,,84.68,2023-01-13 13:37:00,2023-02-10 13:37:00,UOCD##,,20,Active,,352
+12004,Valentine's Day 4,Percentage,32.0,,2023-04-01 15:50:00,2023-04-11 15:50:00,VCXS##,,,Active,100,324
+12005,Valentine's Day 5,Percentage,26.4,,2023-01-20 05:56:00,2023-02-10 05:56:00,MLXE##,25,50,Expired,100,56
+12006,Winter Clearance 6,Buy One Get One,,,2024-03-20 22:13:00,2024-04-13 22:13:00,TZVZ##,100,100,Scheduled,100,101
+12007,Summer Sale 7,Buy One Get One,,,2023-03-04 23:24:00,2023-03-10 23:24:00,RAGG##,75,50,Active,100,371
+12008,Winter Clearance 8,Buy One Get One,,,2023-05-13 18:34:00,2023-05-24 18:34:00,GMIH##,50,,Active,,193
+12009,Flash Deal 9,Fixed Amount,,90.83,2023-12-21 08:42:00,2023-12-24 08:42:00,CUAM##,100,100,Expired,100,162
+12010,Summer Sale 10,Free Shipping,,,2023-01-24 03:16:00,2023-02-12 03:16:00,MOXG##,,,Active,500,6
+12011,New Year 11,Fixed Amount,,10.28,2024-04-21 10:19:00,2024-05-11 10:19:00,WVEI##,,,Active,500,341
+12012,Flash Deal 12,Free Shipping,,,2023-12-18 20:05:00,2024-01-09 20:05:00,HJFI##,,20,Active,,148
+12013,Valentine's Day 13,Buy One Get One,,,2024-04-12 12:17:00,2024-04-22 12:17:00,EDLL##,75,100,Expired,250,69
+12014,Weekend Deal 14,Buy One Get One,,,2023-10-17 10:49:00,2023-11-14 10:49:00,OERR##,,100,Expired,250,20
+12015,New Year 15,Free Shipping,,,2023-09-01 02:57:00,2023-09-10 02:57:00,GGYB##,,,Active,250,331
+12016,VIP Member 16,Fixed Amount,,25.31,2023-08-29 03:30:00,2023-09-21 03:30:00,LSGQ##,25,100,Expired,250,321
+12017,Cyber Monday 17,Free Shipping,,,2023-11-26 02:20:00,2023-12-19 02:20:00,DZUW##,150,,Expired,250,99
+12018,Winter Clearance 18,Buy One Get One,,,2024-05-23 07:55:00,2024-06-12 07:55:00,KXUG##,,20,Expired,250,274
+12019,Clearance 19,Percentage,42.1,,2023-08-17 16:43:00,2023-08-20 16:43:00,UZNC##,25,20,Expired,1000,156
+12020,Winter Clearance 20,Fixed Amount,,47.65,2023-12-30 21:04:00,2024-01-28 21:04:00,ADKE##,100,,Scheduled,,346
+12021,Daily Deal 21,Buy One Get One,,,2023-12-02 15:29:00,2023-12-31 15:29:00,CBBM##,75,100,Active,1000,86
+12022,Holiday Special 22,Percentage,7.0,,2024-01-29 00:41:00,2024-02-03 00:41:00,HXSY##,,,Expired,,302
+12023,Winter Clearance 23,Free Shipping,,,2024-01-15 00:36:00,2024-02-09 00:36:00,ERSU##,,50,Expired,250,77
+12024,VIP Member 24,Fixed Amount,,67.01,2024-05-05 12:41:00,2024-05-14 12:41:00,KOLG##,50,50,Expired,,391
+12025,Black Friday 25,Percentage,35.2,,2023-01-13 08:29:00,2023-01-24 08:29:00,YEBU##,50,100,Active,1000,252
+12026,Easter 26,Buy One Get One,,,2023-06-23 16:00:00,2023-07-19 16:00:00,FDPP##,25,,Active,,27
+12027,Valentine's Day 27,Percentage,37.0,,2023-12-22 08:27:00,2024-01-11 08:27:00,LOTC##,,100,Expired,1000,278
+12028,New Year 28,Free Shipping,,,2023-06-30 20:23:00,2023-07-09 20:23:00,PDPQ##,100,100,Active,1000,398
+12029,Summer Sale 29,Free Shipping,,,2024-03-27 22:32:00,2024-04-08 22:32:00,GIXO##,,50,Expired,500,399
+12030,Daily Deal 30,Free Shipping,,,2024-05-26 09:47:00,2024-06-01 09:47:00,QCYH##,100,100,Expired,500,101
+12031,Holiday Special 31,Buy One Get One,,,2023-11-22 15:12:00,2023-12-21 15:12:00,CBHZ##,50,20,Expired,1000,34
+12032,Cyber Monday 32,Percentage,35.7,,2024-01-06 17:50:00,2024-01-09 17:50:00,PYBZ##,50,20,Expired,100,337
+12033,New Year 33,Fixed Amount,,64.18,2024-04-06 03:30:00,2024-04-27 03:30:00,BJBH##,150,20,Expired,1000,33
+12034,Weekend Deal 34,Percentage,39.6,,2023-11-05 14:49:00,2023-11-14 14:49:00,GVZV##,50,50,Active,250,200
+12035,Daily Deal 35,Buy One Get One,,,2024-01-04 22:47:00,2024-02-02 22:47:00,RWLH##,150,50,Active,250,123
+12036,Easter 36,Buy One Get One,,,2023-03-09 20:43:00,2023-04-07 20:43:00,SFKK##,150,100,Expired,100,128
+12037,Weekend Deal 37,Percentage,46.4,,2023-10-08 09:27:00,2023-10-20 09:27:00,HSCJ##,50,50,Scheduled,1000,12
+12038,Winter Clearance 38,Buy One Get One,,,2024-01-13 05:08:00,2024-02-02 05:08:00,XEJP##,50,,Expired,250,10
+12039,Summer Sale 39,Buy One Get One,,,2023-12-08 12:29:00,2023-12-31 12:29:00,VWGD##,25,100,Active,1000,204
+12040,Back to School 40,Percentage,34.1,,2023-09-24 19:38:00,2023-10-02 19:38:00,LBET##,100,,Expired,,296
+12041,VIP Member 41,Percentage,33.6,,2024-06-01 16:15:00,2024-06-05 16:15:00,HYDF##,75,100,Expired,1000,397
+12042,Clearance 42,Buy One Get One,,,2023-07-02 15:02:00,2023-07-18 15:02:00,MCWA##,25,,Expired,1000,348
+12043,Black Friday 43,Percentage,7.1,,2024-02-03 02:02:00,2024-02-14 02:02:00,RYIM##,150,50,Expired,100,186
+12044,Clearance 44,Percentage,12.7,,2023-10-10 19:38:00,2023-11-04 19:38:00,PYBM##,100,20,Active,100,187
+12045,Weekend Deal 45,Free Shipping,,,2023-11-05 21:07:00,2023-11-19 21:07:00,OGIT##,25,,Expired,500,247
+12046,Clearance 46,Percentage,44.8,,2024-01-01 18:42:00,2024-01-20 18:42:00,DGGS##,150,50,Expired,500,38
+12047,Weekend Deal 47,Buy One Get One,,,2023-12-19 00:18:00,2024-01-04 00:18:00,IVUH##,50,50,Expired,100,156
+12048,Winter Clearance 48,Fixed Amount,,92.37,2023-05-14 00:08:00,2023-05-22 00:08:00,YJXB##,150,,Expired,500,393
+12049,Valentine's Day 49,Buy One Get One,,,2023-04-13 13:10:00,2023-04-27 13:10:00,ADZQ##,150,100,Expired,250,85
+12050,Summer Sale 50,Percentage,13.3,,2024-04-25 20:01:00,2024-05-24 20:01:00,ZWOC##,100,50,Expired,,68
+12051,New Year 51,Fixed Amount,,93.51,2023-06-22 07:32:00,2023-07-07 07:32:00,AFNG##,,,Expired,100,126
+12052,Winter Clearance 52,Fixed Amount,,89.25,2023-05-20 22:30:00,2023-06-06 22:30:00,ZMVH##,75,100,Expired,100,219
+12053,Cyber Monday 53,Fixed Amount,,8.01,2023-11-04 04:55:00,2023-11-26 04:55:00,EWHT##,75,,Scheduled,,380
+12054,Flash Deal 54,Free Shipping,,,2024-01-02 08:45:00,2024-01-21 08:45:00,CTTV##,100,,Expired,1000,117
+12055,Valentine's Day 55,Buy One Get One,,,2023-03-09 05:40:00,2023-04-08 05:40:00,TPEX##,,20,Expired,250,294
+12056,Flash Deal 56,Fixed Amount,,83.6,2023-07-22 11:03:00,2023-08-13 11:03:00,PIYU##,25,100,Expired,1000,219
+12057,Black Friday 57,Fixed Amount,,46.47,2023-12-08 15:53:00,2023-12-24 15:53:00,EVEG##,,50,Expired,500,60
+12058,VIP Member 58,Fixed Amount,,75.61,2023-08-15 09:04:00,2023-08-20 09:04:00,YYWE##,100,100,Expired,250,290
+12059,Summer Sale 59,Fixed Amount,,54.49,2023-11-15 04:21:00,2023-12-03 04:21:00,BHDO##,75,20,Expired,100,313
+12060,Cyber Monday 60,Percentage,27.5,,2023-02-03 07:52:00,2023-02-11 07:52:00,DIWR##,100,,Expired,,142
+12061,Loyalty Reward 61,Percentage,47.5,,2024-04-23 02:01:00,2024-05-23 02:01:00,KMNT##,150,50,Expired,500,36
+12062,Holiday Special 62,Percentage,15.9,,2024-05-04 07:59:00,2024-05-20 07:59:00,KLVW##,100,100,Expired,500,336
+12063,Holiday Special 63,Buy One Get One,,,2023-06-24 14:47:00,2023-07-14 14:47:00,JGAC##,100,100,Expired,,18
+12064,Clearance 64,Percentage,49.3,,2024-05-30 23:10:00,2024-06-27 23:10:00,SZHQ##,50,,Expired,1000,363
+12065,Valentine's Day 65,Free Shipping,,,2023-07-31 07:50:00,2023-08-10 07:50:00,ULML##,150,20,Expired,100,292
+12066,Flash Deal 66,Buy One Get One,,,2024-01-05 14:11:00,2024-02-04 14:11:00,KNJH##,75,100,Active,1000,271
+12067,Clearance 67,Free Shipping,,,2023-02-05 23:06:00,2023-02-21 23:06:00,KEIM##,25,100,Active,500,262
+12068,Winter Clearance 68,Percentage,16.2,,2023-11-17 04:45:00,2023-12-06 04:45:00,KFHI##,,20,Active,100,248
+12069,Black Friday 69,Free Shipping,,,2023-02-20 19:17:00,2023-02-27 19:17:00,OAIU##,,50,Scheduled,100,172
+12070,New Year 70,Buy One Get One,,,2023-09-17 08:21:00,2023-09-20 08:21:00,OUVZ##,150,,Expired,1000,50
+12071,Black Friday 71,Percentage,19.1,,2023-02-09 23:59:00,2023-02-20 23:59:00,CCDO##,,50,Expired,1000,341
+12072,Holiday Special 72,Percentage,23.0,,2023-11-29 10:19:00,2023-12-27 10:19:00,RPWW##,,50,Expired,,296
+12073,Daily Deal 73,Fixed Amount,,96.2,2024-05-22 01:22:00,2024-06-11 01:22:00,KXVV##,100,100,Active,250,117
+12074,New Year 74,Fixed Amount,,69.56,2024-01-08 22:26:00,2024-01-22 22:26:00,TMUS##,100,50,Scheduled,,275
+12075,New Year 75,Free Shipping,,,2024-05-12 11:21:00,2024-06-07 11:21:00,GAGX##,50,,Active,250,193
+12076,Flash Deal 76,Percentage,15.3,,2023-10-30 19:53:00,2023-11-27 19:53:00,ZOCF##,50,20,Expired,250,29
+12077,VIP Member 77,Free Shipping,,,2024-02-19 02:44:00,2024-03-15 02:44:00,HLYM##,,50,Active,250,249
+12078,Clearance 78,Buy One Get One,,,2023-08-04 16:11:00,2023-08-07 16:11:00,LULY##,25,100,Expired,100,238
+12079,Daily Deal 79,Buy One Get One,,,2023-12-30 23:22:00,2024-01-19 23:22:00,UGTM##,,20,Expired,,168
+12080,Clearance 80,Buy One Get One,,,2023-06-20 20:00:00,2023-06-24 20:00:00,QHTY##,,,Expired,250,390
+12081,Black Friday 81,Free Shipping,,,2023-04-01 09:13:00,2023-04-10 09:13:00,ZVEC##,50,20,Scheduled,500,180
+12082,Clearance 82,Buy One Get One,,,2024-01-07 11:06:00,2024-01-19 11:06:00,RAWJ##,150,20,Expired,250,123
+12083,Summer Sale 83,Fixed Amount,,53.43,2023-08-21 15:38:00,2023-09-18 15:38:00,CXXS##,50,100,Active,250,372
+12084,Clearance 84,Buy One Get One,,,2024-03-28 10:57:00,2024-04-23 10:57:00,GLAX##,100,50,Scheduled,1000,220
+12085,Valentine's Day 85,Free Shipping,,,2023-03-25 10:35:00,2023-04-24 10:35:00,DXBM##,75,100,Expired,100,51
+12086,Back to School 86,Percentage,39.8,,2024-05-13 02:06:00,2024-05-21 02:06:00,SYTE##,100,100,Active,,143
+12087,VIP Member 87,Free Shipping,,,2023-12-18 11:52:00,2023-12-29 11:52:00,ZYWL##,100,,Expired,250,356
+12088,Black Friday 88,Free Shipping,,,2023-10-17 07:08:00,2023-10-25 07:08:00,UPRC##,150,,Expired,,249
+12089,VIP Member 89,Buy One Get One,,,2023-12-19 09:25:00,2024-01-13 09:25:00,OJGG##,25,100,Expired,250,150
+12090,New Year 90,Buy One Get One,,,2023-06-27 02:53:00,2023-07-25 02:53:00,ERUB##,,50,Active,500,176
+12091,Easter 91,Percentage,37.7,,2023-02-18 01:38:00,2023-02-27 01:38:00,YUYQ##,50,20,Active,100,199
+12092,VIP Member 92,Fixed Amount,,97.47,2023-07-22 07:35:00,2023-08-09 07:35:00,LPGL##,,,Expired,100,250
+12093,Holiday Special 93,Percentage,43.4,,2023-03-27 06:07:00,2023-04-10 06:07:00,QXYG##,,50,Expired,100,177
+12094,VIP Member 94,Buy One Get One,,,2023-04-11 17:29:00,2023-05-05 17:29:00,OJXN##,50,,Expired,100,317
+12095,Valentine's Day 95,Free Shipping,,,2023-10-29 15:19:00,2023-11-17 15:19:00,NRRN##,50,100,Active,250,254
+12096,Back to School 96,Free Shipping,,,2023-01-30 19:53:00,2023-03-01 19:53:00,DZZS##,75,,Active,250,262
+12097,Loyalty Reward 97,Fixed Amount,,49.45,2023-05-13 05:11:00,2023-05-25 05:11:00,CARX##,75,100,Scheduled,250,26
+12098,Loyalty Reward 98,Fixed Amount,,21.42,2023-08-17 09:32:00,2023-09-08 09:32:00,MALW##,100,,Active,,82
+12099,Black Friday 99,Buy One Get One,,,2024-03-23 19:29:00,2024-03-31 19:29:00,WOWO##,50,100,Scheduled,100,336
+12100,Flash Deal 100,Fixed Amount,,69.14,2023-01-23 17:16:00,2023-02-17 17:16:00,RZEL##,,50,Expired,250,166

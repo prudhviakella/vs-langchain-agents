@@ -1,0 +1,7 @@
+.env
+.venv/
+data/clean/
+data/kb_build.duckdb
+data/kb_feed_ecom.xlsx
+__pycache__/
+deployment.json
