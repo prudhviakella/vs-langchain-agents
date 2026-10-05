@@ -8,11 +8,11 @@
         │     2  data_prep/validate_data.py   48 rules must pass, or it stops
         │     3  data_prep/gen_dictionary.py  data/clean/DATA_DICTIONARY.md
         │     4  kb_feed/load_duckdb.py       data/kb_build.duckdb (local SQL engine)
-        │     5  kb_feed/build_kb_feed.py     data/kb_feed_ecom.xlsx (every example executed)
+        │     5  kb_feed/build_kb_feed.py     kb_feed/kb_feed_ecom.xlsx (every example executed)
         ▼
         │  python run.py deploy             create RDS PostgreSQL (public, your IP only) and load it
         │  python run.py postgres           reload Postgres — the deployed one (deployment.json) or PG* in .env
-        │  python run.py pinecone           kb_feed → Pinecone (PINECONE_* + AWS credentials)
+        │  python run.py pinecone           kb_feed → Pinecone (PINECONE_API_KEY + OPENAI_API_KEY)
         │  python run.py pinecone --dry-run build and check the records, send nothing
         │  python run.py test               offline tests of the Pinecone pipeline
         │  python run.py all                prepare → postgres → pinecone
@@ -33,7 +33,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 RAW, CLEAN = ROOT / "data" / "raw", ROOT / "data" / "clean"
-DUCKDB, FEED = ROOT / "data" / "kb_build.duckdb", ROOT / "data" / "kb_feed_ecom.xlsx"
+DUCKDB = ROOT / "data" / "kb_build.duckdb"            # build artifact, rebuilt by prepare
+FEED = ROOT / "kb_feed" / "kb_feed_ecom.xlsx"           # the knowledge base itself: shipped and versioned
 DEPLOYMENT = ROOT / "postgres" / "deployment.json"
 
 
@@ -42,7 +43,7 @@ NEEDS = {
     "prepare":  {"pandas": "pandas", "numpy": "numpy", "duckdb": "duckdb", "openpyxl": "openpyxl"},
     "deploy":   {"boto3": "boto3", "psycopg": "psycopg[binary]", "openpyxl": "openpyxl"},
     "postgres": {"psycopg": "psycopg[binary]", "openpyxl": "openpyxl", "boto3": "boto3"},
-    "pinecone": {"openpyxl": "openpyxl", "pinecone": "pinecone", "boto3": "boto3"},
+    "pinecone": {"openpyxl": "openpyxl", "pinecone": "pinecone", "openai": "openai"},
     "test":     {"pytest": "pytest", "openpyxl": "openpyxl", "moto": "moto"},
 }
 NEEDS["all"] = {**NEEDS["prepare"], **NEEDS["postgres"], **NEEDS["pinecone"]}
@@ -98,6 +99,12 @@ def prepare() -> None:
     step("5 kb_feed workbook", "kb_feed/build_kb_feed.py", "--db", DUCKDB, "--out", FEED)
 
 
+def require(path: Path, what: str) -> None:
+    """Stop with the command that makes `path`, instead of a traceback later."""
+    if not path.exists():
+        raise SystemExit(f"{what} is missing: {path.relative_to(ROOT)}\n  run `python run.py prepare` first")
+
+
 def deploy(extra: list[str]) -> None:
     step("Deploy RDS PostgreSQL and load", "postgres/deploy.py", *extra)
 
@@ -112,6 +119,8 @@ def postgres() -> None:
                           AWS_REGION=info["region"], AWS_DEFAULT_REGION=info["region"])
         os.environ.setdefault("PG_SECRET_ID", info["secret_arn"])
         print(f"using the deployed instance {info['instance']} (deployment.json)")
+    require(CLEAN / "orders.csv", "the cleaned data")
+    require(FEED, "the knowledge-base workbook")
     missing = [k for k in ("PGHOST", "PGDATABASE", "PGUSER") if not os.environ.get(k)] if not os.environ.get("PG_SECRET_ID") else []
     if missing:
         raise SystemExit(f"Postgres settings missing: {missing} — set them in .env (or PG_SECRET_ID)")
@@ -122,17 +131,21 @@ def postgres() -> None:
 
 
 def pinecone(dry_run: bool) -> None:
+    require(FEED, "the knowledge-base workbook")
     args = [FEED]
     if dry_run:
         args.append("--dry-run")
     else:
-        if not (os.environ.get("PINECONE_API_KEY") or os.environ.get("PINECONE_SECRET_ID")):
-            raise SystemExit("Pinecone key missing: set PINECONE_API_KEY or PINECONE_SECRET_ID in .env")
+        missing = [name for name, alt in (("PINECONE_API_KEY", "PINECONE_SECRET_ID"), ("OPENAI_API_KEY", "OPENAI_SECRET_ID"))
+                   if not (os.environ.get(name) or os.environ.get(alt))]
+        if missing:
+            raise SystemExit(f"missing in .env: {', '.join(missing)} — the Pinecone key, and the OpenAI key for embeddings")
         args += ["--index", os.environ.get("PINECONE_INDEX", "ecom-kb"),
-                 "--bedrock-region", os.environ.get("AWS_REGION", "us-east-1"),
                  "--pinecone-region", os.environ.get("PINECONE_REGION", "us-east-1")]
         if os.environ.get("PINECONE_SECRET_ID"):
             args += ["--pinecone-secret-id", os.environ["PINECONE_SECRET_ID"]]
+        if os.environ.get("OPENAI_SECRET_ID"):
+            args += ["--openai-secret-id", os.environ["OPENAI_SECRET_ID"]]
         if os.environ.get("KB_MODE"):
             args += ["--mode", os.environ["KB_MODE"]]
     step("Pinecone publish" + (" (dry run)" if dry_run else ""), "pinecone_kb/kb_to_pinecone.py", *args)

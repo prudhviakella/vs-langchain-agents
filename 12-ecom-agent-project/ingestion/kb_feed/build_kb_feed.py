@@ -7,7 +7,7 @@
     HEADERS below   (the kb_feed sheets and columns, copied from the original workbook)
 
     cd ingestion
-    python kb_feed/build_kb_feed.py --db data/kb_build.duckdb --out data/kb_feed_ecom.xlsx
+    python kb_feed/build_kb_feed.py --db data/kb_build.duckdb --out kb_feed/kb_feed_ecom.xlsx
     (--template <original kb_feed.xlsx> checks HEADERS against it; not needed to run)
 
     STEP 1  measure every column: type, enum values, samples, date format
@@ -298,7 +298,7 @@ def main() -> None:
     import argparse
     ap = argparse.ArgumentParser(description="Build the e-commerce kb_feed workbook")
     ap.add_argument("--db", type=Path, default=Path("data/kb_build.duckdb"), help="DuckDB file from load_duckdb.py")
-    ap.add_argument("--out", type=Path, default=Path("data/kb_feed_ecom.xlsx"))
+    ap.add_argument("--out", type=Path, default=Path("kb_feed/kb_feed_ecom.xlsx"))
     ap.add_argument("--template", type=Path, help="original kb_feed workbook, to check HEADERS against")
     args = ap.parse_args()
     if args.template:

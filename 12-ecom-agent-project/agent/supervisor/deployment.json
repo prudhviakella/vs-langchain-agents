@@ -1,0 +1,5 @@
+{
+  "agent": "supervisor",
+  "runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:234360896963:runtime/ecom_supervisor-zQcOQ0ExQW",
+  "region": "us-east-1"
+}

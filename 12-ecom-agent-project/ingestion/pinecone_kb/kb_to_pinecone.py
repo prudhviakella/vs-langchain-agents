@@ -4,7 +4,7 @@
                      STEP 2  resolve: latest effective_date per record key wins; DELETE removes
                      STEP 3  build records: id, namespace, embed_text, metadata, content_hash
                      STEP 4  diff: fetch each record's stored content_hash from Pinecone
-                     STEP 5  embed what changed (Bedrock Titan v2, 1024-d, normalised) and upsert
+                     STEP 5  embed what changed (OpenAI text-embedding-3-small, 1536-d), upsert
                      STEP 6  delete: DELETE rows, and — in --mode full — vectors no longer in the feed
                      STEP 7  verify: vector count per namespace, self-retrieval, canary questions
 
@@ -15,17 +15,26 @@
         common        glossary · capability_card
 
     cd ingestion
-    python pinecone_kb/kb_to_pinecone.py data/kb_feed_ecom.xlsx --index ecom-kb
+    python pinecone_kb/kb_to_pinecone.py kb_feed/kb_feed_ecom.xlsx --index ecom-kb
     python pinecone_kb/kb_to_pinecone.py data/changes_2026-11-01.xlsx --index ecom-kb --mode incremental
-    python pinecone_kb/kb_to_pinecone.py data/kb_feed_ecom.xlsx --dry-run      (no Pinecone, no Bedrock)
+    python pinecone_kb/kb_to_pinecone.py kb_feed/kb_feed_ecom.xlsx --dry-run      (no Pinecone, no OpenAI)
+
+EMBEDDINGS — OpenAI text-embedding-3-small, 1536 dimensions
+    One API call embeds up to 100 records. OpenAI returns unit-length vectors,
+    so cosine similarity is the dot product. The index is created with the tag
+    embedding_model=text-embedding-3-small: several OpenAI models share 1536
+    dimensions, so the dimension alone cannot tell their vectors apart. The
+    agents read the tag and embed questions with the SAME model — vectors from
+    two models in one index would retrieve nonsense.
 
 ADAPTED FROM THE ACT OPENSEARCH PIPELINE (nb0-nb2), WHAT CHANGED AND WHY
     - No S3 staging and no gold Delta table: one workbook of a few hundred rows,
       and Pinecone metadata carries each record's content_hash, so Pinecone
       itself is the publish state that kb_published_state used to be.
     - Namespaces instead of five indexes: Pinecone's built-in partition.
-    - cosine instead of faiss innerproduct: Pinecone supports cosine natively;
-      Titan still embeds with normalize=True, so the scores read the same.
+    - cosine instead of faiss innerproduct: Pinecone supports cosine natively.
+    - OpenAI embeddings instead of Bedrock Titan: one key, batched calls, the
+      same embedding family as the rest of the project.
     - embed_exempt rows are NOT stored: every Pinecone record needs a vector.
       They are counted and reported; in the e-commerce feed they are the 8
       latitude/longitude columns, which no analyst searches for.
@@ -46,6 +55,8 @@ WHAT THIS DOES NOT DO
       paraphrases — the agent matches language, then reads the vetted query.
     - It does not decide `verified`: examples keep the workbook's flag, and an
       agent should filter on verified = True.
+    - It does not mix models: an index tagged with another embedding model, or
+      with another dimension or metric, is refused, never written to.
 """
 import argparse
 import ast
@@ -58,8 +69,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
-MODEL_ID = "amazon.titan-embed-text-v2:0"
-DIMENSION = 1024
+MODEL = "text-embedding-3-small"
+DIMENSION = 1536
 METADATA_LIMIT = 38_000            # Pinecone caps metadata at 40 KB per record
 BATCH = 100
 
@@ -299,25 +310,32 @@ def pinecone_metadata(rec: Record) -> dict:
     return out
 
 
-# ── embedding (from the reference: Titan v2, normalised, retry with backoff) ──
-def titan_embedder(region: str):
-    import boto3
-    client = boto3.client("bedrock-runtime", region_name=region)
+# ── secrets ──────────────────────────────────────────────────────────────
+def api_key(env_var: str, secret_id: str | None) -> str:
+    """From Secrets Manager ({"api_key": …}) when an id is given, else the environment."""
+    if secret_id:
+        import boto3
+        return json.loads(boto3.client("secretsmanager").get_secret_value(SecretId=secret_id)["SecretString"])["api_key"]
+    key = os.environ.get(env_var)
+    if not key:
+        raise SystemExit(f"{env_var} is not set — put it in ingestion/.env (or pass a Secrets Manager id)")
+    return key
 
-    def embed(text: str, max_retries: int = 6) -> list[float]:
-        body = json.dumps({"inputText": text[:45_000], "dimensions": DIMENSION, "normalize": True})
-        delay = 1.0
-        for attempt in range(max_retries):
-            try:
-                resp = client.invoke_model(modelId=MODEL_ID, contentType="application/json",
-                                           accept="application/json", body=body)
-                return json.loads(resp["body"].read())["embedding"]
-            except Exception:
-                if attempt == max_retries - 1:
-                    raise
-                time.sleep(delay)
-                delay = min(delay * 2, 30)
-        raise RuntimeError("unreachable")
+
+# ── embedding ────────────────────────────────────────────────────────────
+def openai_embedder(key: str):
+    """texts -> vectors, in input order. The client retries rate limits and
+    transient errors with backoff (max_retries)."""
+    from openai import OpenAI
+    client = OpenAI(api_key=key, max_retries=6)
+
+    def embed(texts: list[str]) -> list[list[float]]:
+        vectors = []
+        for i in range(0, len(texts), BATCH):
+            resp = client.embeddings.create(model=MODEL, input=texts[i:i + BATCH])
+            # each item carries the index of its input — order by it, not by position
+            vectors += [d.embedding for d in sorted(resp.data, key=lambda d: d.index)]
+        return vectors
     return embed
 
 
@@ -347,17 +365,15 @@ def publish(index, embed, records: list[Record], owned: set[str], mode: str, ful
         todo = [r for r in live if full_reembed or have.get(r.id) != r.content_hash]
         stats["unchanged"] += len(live) - len(todo)
 
-        # STEP 5 — embed and upsert only what changed
-        batch = []
-        for r in todo:
-            vec = embed(r.embed_text)
-            stats["first"] = stats["first"] or (r.id, ns, vec)
-            batch.append({"id": r.id, "values": vec, "metadata": pinecone_metadata(r)})
-            if len(batch) == BATCH:
-                index.upsert(vectors=batch, namespace=ns)
-                batch = []
-        if batch:
-            index.upsert(vectors=batch, namespace=ns)
+        # STEP 5 — embed what changed, 100 per call, and upsert in the same batches
+        for i in range(0, len(todo), BATCH):
+            chunk = todo[i:i + BATCH]
+            vectors = embed([r.embed_text for r in chunk])
+            if len(vectors) != len(chunk):
+                raise RuntimeError(f"{len(chunk)} texts sent, {len(vectors)} vectors returned")
+            stats["first"] = stats["first"] or (chunk[0].id, ns, vectors[0])
+            index.upsert(vectors=[{"id": r.id, "values": v, "metadata": pinecone_metadata(r)}
+                                  for r, v in zip(chunk, vectors)], namespace=ns)
         stats["embedded"] += len(todo)
 
         # STEP 6 — DELETE rows; exempt rows that were embedded before; and in
@@ -390,26 +406,35 @@ def verify(index, embed, records: list[Record], owned: set[str], first, wait_s: 
         top = [m.id for m in index.query(vector=vec, top_k=3, namespace=ns).matches]
         print(f"  [{'OK' if rid in top else 'FAILED'}] self-retrieval of {rid}: top-3 {top}")
         ok &= rid in top
-    for ns in sorted(owned):
-        for question, expect in CANARIES.get(ns, []):
-            hits = index.query(vector=embed(question), top_k=5, namespace=ns, include_metadata=True).matches
-            found = any(expect.lower() in json.dumps(h.metadata or {}).lower() for h in hits)
-            print(f"  canary {ns} [{question}] -> {'OK' if found else 'WEAK (review)'}")
+    questions = [(ns, q, expect) for ns in sorted(owned) for q, expect in CANARIES.get(ns, [])]
+    vectors = embed([q for _, q, _ in questions]) if questions else []
+    for (ns, question, expect), vec in zip(questions, vectors):
+        hits = index.query(vector=vec, top_k=5, namespace=ns, include_metadata=True).matches
+        found = any(expect.lower() in json.dumps(h.metadata or {}).lower() for h in hits)
+        print(f"  canary {ns} [{question}] -> {'OK' if found else 'WEAK (review)'}")
     return ok
 
 
 def open_index(pc, name: str, cloud: str, region: str):
-    """Create the index if missing; refuse one with the wrong dimension or metric."""
+    """Create the index if missing, tagged with the embedding model. Refuse an
+    index with another dimension, metric or embedding_model tag."""
     from pinecone import ServerlessSpec
     if not pc.has_index(name):
-        print(f"creating index {name} ({DIMENSION}-d, cosine, {cloud}/{region})")
-        pc.create_index(name=name, dimension=DIMENSION, metric="cosine", spec=ServerlessSpec(cloud=cloud, region=region))
+        print(f"creating index {name} ({DIMENSION}-d, cosine, {cloud}/{region}, embedding_model={MODEL})")
+        pc.create_index(name=name, dimension=DIMENSION, metric="cosine",
+                        spec=ServerlessSpec(cloud=cloud, region=region), tags={"embedding_model": MODEL})
         while not pc.describe_index(name).status["ready"]:
             time.sleep(3)
     desc = pc.describe_index(name)
     if desc.dimension != DIMENSION or str(desc.metric) != "cosine":
         raise SystemExit(f"index {name} is {desc.dimension}-d / {desc.metric}; this pipeline writes "
-                         f"{DIMENSION}-d / cosine — use another index name")
+                         f"{DIMENSION}-d / cosine ({MODEL}) — use another index name")
+    tags = dict(getattr(desc, "tags", None) or {})
+    if tags.get("embedding_model") not in (None, MODEL):
+        raise SystemExit(f"index {name} holds {tags['embedding_model']} vectors; this pipeline writes {MODEL} "
+                         "— mixing models breaks retrieval; use another index name")
+    if "embedding_model" not in tags:
+        print(f"  note: index {name} has no embedding_model tag — add embedding_model={MODEL} in the Pinecone console")
     return pc.Index(host=desc.host)
 
 
@@ -420,11 +445,11 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true",
                     help="read, validate and build the records, check metadata limits, then stop — no network")
     ap.add_argument("--mode", choices=["full", "incremental"], default="full")
-    ap.add_argument("--full-reembed", action="store_true", help="re-embed every record (model change)")
-    ap.add_argument("--bedrock-region", default=os.environ.get("AWS_REGION", "us-east-1"))
+    ap.add_argument("--full-reembed", action="store_true", help="re-embed every record (after a model change)")
     ap.add_argument("--pinecone-cloud", default="aws")
     ap.add_argument("--pinecone-region", default="us-east-1")
     ap.add_argument("--pinecone-secret-id", help="Secrets Manager id holding {\"api_key\": …}; else PINECONE_API_KEY")
+    ap.add_argument("--openai-secret-id", help="Secrets Manager id holding {\"api_key\": …}; else OPENAI_API_KEY")
     args = ap.parse_args()
 
     records, owned = records_from(args.workbooks)
@@ -438,20 +463,17 @@ def main() -> None:
             biggest = max((len(json.dumps(pinecone_metadata(r))) for r in live), default=0)
             print(f"  {ns:13} would store {len(live):>4} | exempt {sum(r.exempt for r in mine):>2} | "
                   f"DELETE {sum(r.action == 'DELETE' for r in mine):>2} | largest metadata {biggest:,} bytes")
-        print("dry run: nothing sent to Pinecone or Bedrock")
+        print("dry run: nothing sent to Pinecone or OpenAI")
         return
     if not args.index:
         raise SystemExit("--index is required (or use --dry-run)")
 
     from pinecone import Pinecone
-    key = os.environ.get("PINECONE_API_KEY")
-    if args.pinecone_secret_id:
-        import boto3
-        key = json.loads(boto3.client("secretsmanager").get_secret_value(SecretId=args.pinecone_secret_id)["SecretString"])["api_key"]
-    index = open_index(Pinecone(api_key=key), args.index, args.pinecone_cloud, args.pinecone_region)
-    embed = titan_embedder(args.bedrock_region)
+    embed = openai_embedder(api_key("OPENAI_API_KEY", args.openai_secret_id))     # fail on a missing key first
+    pc = Pinecone(api_key=api_key("PINECONE_API_KEY", args.pinecone_secret_id))
+    index = open_index(pc, args.index, args.pinecone_cloud, args.pinecone_region)
 
-    print(f"[4-6] publishing ({args.mode}{', full re-embed' if args.full_reembed else ''})")
+    print(f"[4-6] publishing ({args.mode}{', full re-embed' if args.full_reembed else ''}) with {MODEL}")
     stats = publish(index, embed, records, owned, args.mode, args.full_reembed)
     print(f"      embedded {stats['embedded']}, unchanged {stats['unchanged']}, deleted {stats['deleted']}, "
           f"exempt (not stored) {stats['exempt']}")

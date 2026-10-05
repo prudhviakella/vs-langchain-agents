@@ -1,20 +1,12 @@
-# E-commerce NLQ agent
+# Agents
 
-```
-12-ecom-agent-project/
-├── ingestion/   data in:  raw CSVs ─► clean ─► RDS PostgreSQL (schema ecom)
-│                                          └─► Pinecone knowledge base (ecom-kb)
-└── agent/       answers out: question ─► knowledge base + SQL on PostgreSQL ─► answer
-```
+The NLQ agents go here. They read what `../ingestion/` produced:
 
-| Folder | What it is | Start with |
-|---|---|---|
-| `ingestion/` | prepares the data and loads PostgreSQL and Pinecone | [`ingestion/README.md`](ingestion/README.md) |
-| `agent/` | the NLQ agents — next | [`agent/README.md`](agent/README.md) |
+| Input | Where it comes from |
+|---|---|
+| PostgreSQL schema `ecom` — 14 tables, keys, table and column comments | `../ingestion/postgres/deployment.json` (host, port, database, secret ARN) |
+| Pinecone index `ecom-kb` — namespaces `nlq-schema`, `nlq-examples`, `common` | `PINECONE_INDEX` in `../ingestion/.env` |
+| Embedding model for questions: **`text-embedding-3-small`** (1536-d) — the SAME model the KB was embedded with | the index's `embedding_model` tag |
+| Querying rules (merchandise revenue, delivered-only delivery times, …) | `../ingestion/data/clean/DATA_DICTIONARY.md` and the `capability_card` records |
 
-One virtual environment, `.venv` in this folder, serves both parts. In PyCharm's Terminal:
-
-```bash
-cd ingestion
-python run.py prepare
-```
+Agents connect to PostgreSQL as a read-only user, never as `ecom_admin`.

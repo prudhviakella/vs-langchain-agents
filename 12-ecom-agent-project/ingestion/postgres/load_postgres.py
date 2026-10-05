@@ -11,7 +11,7 @@
 
     cd ingestion
     python postgres/load_postgres.py --data data/clean
-    python postgres/load_postgres.py --data data/clean --kb-feed data/kb_feed_ecom.xlsx --check-examples
+    python postgres/load_postgres.py --data data/clean --kb-feed kb_feed/kb_feed_ecom.xlsx --check-examples
 
 CONNECTION — either
     PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD, PGSSLMODE (default "require"), or

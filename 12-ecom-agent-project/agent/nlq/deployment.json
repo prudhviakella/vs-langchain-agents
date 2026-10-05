@@ -1,0 +1,8 @@
+{
+  "agent": "nlq",
+  "runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:234360896963:runtime/ecom_nlq-Vcg3V74hFj",
+  "region": "us-east-1",
+  "gateway_url": "https://ecom-nlq-gateway-b1bpx4alyi.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+  "lambda": "ecom-nlq-sql",
+  "reader_secret": "ecom-nlq/db-reader"
+}

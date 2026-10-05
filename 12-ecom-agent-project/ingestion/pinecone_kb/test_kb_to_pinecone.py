@@ -5,7 +5,8 @@
                 describe_index_stats().namespaces, query().matches), and it
                 REJECTS what Pinecone rejects: null or nested metadata,
                 non-string lists, metadata over 40 KB, wrong dimension
-    embed()     deterministic: the same text always gives the same unit vector
+    Embedder    deterministic, list in -> list out like the OpenAI one: the same
+                text always gives the same unit vector; counts texts embedded
 
     first full publish · unchanged re-run · edited row (incremental) · DELETE row ·
     row removed from a full feed · bad action · sheet without a builder
@@ -24,7 +25,7 @@ import pytest
 
 import kb_to_pinecone as K
 
-FEED = os.environ.get("FEED", "../kb_feed_ecom.xlsx")
+FEED = os.environ.get("FEED", "../kb_feed/kb_feed_ecom.xlsx")
 
 
 class FakeIndex:
@@ -65,15 +66,18 @@ class FakeIndex:
 
 class Embedder:
     def __init__(self):
-        self.calls = 0
+        self.calls = 0                      # texts embedded
 
-    def __call__(self, text):
-        self.calls += 1
+    def one(self, text):
         v = [0.0] * K.DIMENSION
         for w in text.lower().split():
             v[int(hashlib.md5(w.encode()).hexdigest(), 16) % K.DIMENSION] += 1
         n = math.sqrt(sum(x * x for x in v)) or 1.0
         return [x / n for x in v]
+
+    def __call__(self, texts):
+        self.calls += len(texts)
+        return [self.one(t) for t in texts]
 
 
 def run(paths, index, mode="full"):
@@ -191,3 +195,55 @@ def test_a_sheet_without_a_builder_is_refused_not_dropped(tmp_path):
     feed = edited_copy(tmp_path, "nlc.xlsx", edit)
     with pytest.raises(SystemExit, match=r"\[nlc_node\] has 1 rows but no builder"):
         K.records_from([feed])
+
+
+# ── OpenAI embedder and the index guard ──────────────────────────────────
+def test_openai_embedder_batches_and_keeps_input_order(monkeypatch):
+    """The API may return items in any order; each carries its input index."""
+    sent = []
+
+    class FakeEmbeddings:
+        def create(self, *, model, input):
+            assert model == "text-embedding-3-small"
+            sent.append(len(input))
+            items = [NS(index=i, embedding=[float(t.split()[-1])] * K.DIMENSION) for i, t in enumerate(input)]
+            return NS(data=list(reversed(items)))              # deliberately out of order
+
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", lambda **kw: NS(embeddings=FakeEmbeddings()))
+    embed = K.openai_embedder("sk-test")
+    vectors = embed([f"text {n}" for n in range(250)])
+    assert sent == [100, 100, 50]
+    assert [v[0] for v in vectors] == [float(n) for n in range(250)]
+
+
+class FakePinecone:
+    def __init__(self, existing=None):
+        self.created, self.existing = None, existing
+
+    def has_index(self, name):
+        return self.existing is not None or self.created is not None
+
+    def create_index(self, *, name, dimension, metric, spec, tags):
+        self.created = dict(dimension=dimension, metric=metric, tags=tags)
+
+    def describe_index(self, name):
+        d = self.existing or self.created
+        return NS(dimension=d["dimension"], metric=d["metric"], tags=d.get("tags"), host="h", status={"ready": True})
+
+    def Index(self, host):
+        return NS(host=host)
+
+
+def test_a_new_index_is_tagged_with_the_model():
+    pc = FakePinecone()
+    K.open_index(pc, "ecom-kb", "aws", "us-east-1")
+    assert pc.created == {"dimension": 1536, "metric": "cosine", "tags": {"embedding_model": "text-embedding-3-small"}}
+
+
+def test_an_index_of_another_model_or_dimension_is_refused():
+    with pytest.raises(SystemExit, match="holds text-embedding-ada-002 vectors"):
+        K.open_index(FakePinecone({"dimension": 1536, "metric": "cosine", "tags": {"embedding_model": "text-embedding-ada-002"}}),
+                     "ecom-kb", "aws", "us-east-1")
+    with pytest.raises(SystemExit, match="is 1024-d"):
+        K.open_index(FakePinecone({"dimension": 1024, "metric": "cosine", "tags": None}), "ecom-kb", "aws", "us-east-1")

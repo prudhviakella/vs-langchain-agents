@@ -265,7 +265,7 @@ def main(argv=None) -> None:
     ap.add_argument("--deletion-protection", action="store_true")
     ap.add_argument("--allow-cidr", help="who may connect; default: your public IP /32")
     ap.add_argument("--data", type=Path, default=ROOT / "data" / "clean")
-    ap.add_argument("--kb-feed", type=Path, default=ROOT / "data" / "kb_feed_ecom.xlsx")
+    ap.add_argument("--kb-feed", type=Path, default=ROOT / "kb_feed" / "kb_feed_ecom.xlsx")
     ap.add_argument("--skip-load", action="store_true")
     ap.add_argument("--destroy", action="store_true")
     ap.add_argument("--yes", action="store_true", help="with --destroy: do not ask")

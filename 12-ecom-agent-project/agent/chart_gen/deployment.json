@@ -1,0 +1,5 @@
+{
+  "agent": "chart_gen",
+  "runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:234360896963:runtime/ecom_chart_gen-S7CyoEHWdd",
+  "region": "us-east-1"
+}

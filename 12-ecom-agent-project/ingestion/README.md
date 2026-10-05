@@ -7,7 +7,7 @@ Pinecone, where the agents in `../agent/` will read it.
 data/raw/*.csv ─► prepare ─► data/clean/*.csv ───────────► deploy / postgres ─► RDS PostgreSQL
    (14 files)       │        DATA_DICTIONARY.md                                  schema ecom · keys · comments
                     │                                                            your IP only · password in Secrets Manager
-                    └──────► data/kb_feed_ecom.xlsx ─────────► pinecone ────────► Pinecone index (Titan embeddings)
+                    └──────► kb_feed/kb_feed_ecom.xlsx ─────────► pinecone ────────► Pinecone index (OpenAI embeddings)
                              (61 SQL examples, executed)                          nlq-schema · nlq-examples · common
 ```
 
@@ -20,7 +20,7 @@ No Databricks, no Spark, no notebooks.
 | `python run.py deploy` | AWS login | create RDS PostgreSQL (public, **your IP only**) and load it — ~10 min the first time |
 | `python run.py postgres` | AWS login | reload the deployed database (or any database set in `.env`) |
 | `python run.py pinecone --dry-run` | nothing online | build and check every knowledge-base record; send nothing |
-| `python run.py pinecone` | AWS login + Pinecone key | publish the knowledge base to Pinecone |
+| `python run.py pinecone` | Pinecone key + OpenAI key | publish the knowledge base to Pinecone (embeddings: OpenAI `text-embedding-3-small`) |
 | `python run.py test` | nothing online | offline tests |
 | `python run.py deploy --destroy` | AWS login | delete the RDS instance, its subnet group and security group |
 
@@ -69,7 +69,7 @@ Interpreter › Virtualenv Environment › New*, base interpreter Python 3.12. P
 ```bash
 cd ingestion
 pip install -r requirements.txt
-cp .env.example .env                       # then fill in your Pinecone key
+cp .env.example .env                       # then fill in your Pinecone and OpenAI keys
 ```
 
 Already using a shared environment (one `.venv` in a parent folder for several projects)?
@@ -107,7 +107,8 @@ Try `SELECT COUNT(*) FROM ecom.orders;` (50000). Leave with `\q`.
 
 ### 6. Publish the knowledge base to Pinecone
 
-Put `PINECONE_API_KEY` in `.env` first.
+Put `PINECONE_API_KEY` and `OPENAI_API_KEY` in `ingestion/.env` first. It creates the index
+`ecom-kb` (1536-d, cosine, tagged `embedding_model=text-embedding-3-small`) on the first run.
 
 ```bash
 python run.py pinecone --dry-run
@@ -152,7 +153,7 @@ Interpreter › Virtualenv Environment › New*, base interpreter Python 3.12. P
 ```powershell
 cd ingestion
 python -m pip install -r requirements.txt
-Copy-Item .env.example .env                # then fill in your Pinecone key
+Copy-Item .env.example .env                # then fill in your Pinecone and OpenAI keys
 ```
 
 If the Terminal shows an error about `Activate.ps1` ("running scripts is disabled on this
@@ -192,7 +193,8 @@ Try `SELECT COUNT(*) FROM ecom.orders;` (50000). Leave with `\q`.
 
 ### 6. Publish the knowledge base to Pinecone
 
-Put `PINECONE_API_KEY` in `.env` first.
+Put `PINECONE_API_KEY` and `OPENAI_API_KEY` in `ingestion/.env` first. It creates the index
+`ecom-kb` (1536-d, cosine, tagged `embedding_model=text-embedding-3-small`) on the first run.
 
 ```powershell
 python run.py pinecone --dry-run
@@ -218,7 +220,8 @@ python run.py deploy --destroy             # delete everything in AWS when done
 |---|---|---|
 | `PINECONE_API_KEY` | `pinecone` | or `PINECONE_SECRET_ID` (Secrets Manager id holding `{"api_key": …}`) |
 | `PINECONE_INDEX` | `pinecone` | default `ecom-kb`; created on first run |
-| `AWS_REGION`, `AWS_PROFILE` | `deploy`, `postgres`, `pinecone` | your usual AWS login; default region `us-east-1` |
+| `OPENAI_API_KEY` | `pinecone` | embeddings; or `OPENAI_SECRET_ID` (Secrets Manager id holding `{"api_key": …}`) |
+| `AWS_REGION`, `AWS_PROFILE` | `deploy`, `postgres` | your usual AWS login; default region `us-east-1` |
 | `PGHOST` … `PGPASSWORD` | `postgres` against another database | not needed after `deploy` — it uses `deployment.json` |
 
 `.env` is in `.gitignore`. Never commit it.
@@ -263,10 +266,10 @@ python data_prep/fix_data.py data/raw data/clean
 python data_prep/validate_data.py data/clean
 python data_prep/gen_dictionary.py data/clean data/clean/DATA_DICTIONARY.md
 python kb_feed/load_duckdb.py data/clean data/kb_build.duckdb
-python kb_feed/build_kb_feed.py --db data/kb_build.duckdb --out data/kb_feed_ecom.xlsx
+python kb_feed/build_kb_feed.py --db data/kb_build.duckdb --out kb_feed/kb_feed_ecom.xlsx
 python postgres/deploy.py --skip-load
-python postgres/load_postgres.py --data data/clean --kb-feed data/kb_feed_ecom.xlsx --check-examples
-python pinecone_kb/kb_to_pinecone.py data/kb_feed_ecom.xlsx --dry-run
+python postgres/load_postgres.py --data data/clean --kb-feed kb_feed/kb_feed_ecom.xlsx --check-examples
+python pinecone_kb/kb_to_pinecone.py kb_feed/kb_feed_ecom.xlsx --dry-run
 ```
 
 ## What is where
