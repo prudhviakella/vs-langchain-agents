@@ -8,8 +8,13 @@
       ─► STEP 2 NLQ per sub-question (A2A stream)                    status + reasoning (the SQL, row counts)
       ─► STEP 3 chart_gen on the main table (≥ chart_min_rows rows)  status: charting
       ─► STEP 4 compose (gpt-6-sol, streamed)                        token × n
-      ─► STEP 5 final  {kind, text, reasoning, entities, artifacts{table, charts, graphs, exports},
+      ─► STEP 5 final  {kind, text, reasoning, entities, sources, artifacts{table, charts, graphs, exports},
                         artifact_summary, agents_used, usage_by_agent, plan_record, trace_id, options}
+
+    sources — the CITATION, one record per NLQ call that ran a query (ACT's SourceRecord):
+        {call_id, agent, store, query_language, query, question, row_count, sources: [tables], filters}
+        The tables are read from the SQL that RAN, so a citation can never name a
+        table the query did not read. A failed call is not cited.
 
     event types (what the backend relays as SSE):  status · reasoning · token · final
 
@@ -81,6 +86,17 @@ def _entities(labels: list[str]) -> list[dict]:
     return out
 
 
+def _source(q: str, r: dict) -> dict | None:
+    """ACT's SourceRecord for one NLQ call — None when no query ran.
+    Tables come from the SQL that RAN: NLQ always qualifies them as ecom.<table>."""
+    sql = r.get("sql") or ""
+    if "error" in r or not sql:
+        return None
+    tables = sorted({f"ecom.{t}" for t in re.findall(r"\becom\.(\w+)", sql)})
+    return {"call_id": uuid.uuid4().hex, "agent": "nlq", "store": "PostgreSQL ecom", "query_language": "SQL",
+            "query": sql, "question": q, "row_count": r.get("row_count"), "sources": tables, "filters": []}
+
+
 def _evidence(i: int, q: str, r: dict) -> str:
     if "error" in r:
         return f"### Evidence {i}: {q}\nERROR: {r['error']}"
@@ -120,7 +136,7 @@ async def orchestrate(question: str, history: list[dict] | None = None, conversa
     yield reason(f"Plan: {decision.rationale}")
 
     base = {"type": "final", "kind": "answer", "trace_id": trace_id, "clarifying_question": "", "options": [],
-            "entities": [], "artifacts": {"table": None, "charts": [], "graphs": [], "exports": []}}
+            "entities": [], "sources": [], "artifacts": {"table": None, "charts": [], "graphs": [], "exports": []}}
 
     def final(text: str, agents: list[str], extra: dict | None = None) -> dict:
         arts = base["artifacts"]
@@ -174,6 +190,7 @@ async def orchestrate(question: str, history: list[dict] | None = None, conversa
                                       "row_count": main.get("row_count", len(main["rows"])),
                                       "truncated": bool(main.get("truncated")), "sql": main.get("sql", "")}
     base["entities"] = _entities([e for _, r in results for e in (r.get("entities") or [])])
+    base["sources"] = [src for q, r in results if (src := _source(q, r))]
 
     # STEP 3 — chart the main table when it has something to show
     agents = ["supervisor", "nlq"]

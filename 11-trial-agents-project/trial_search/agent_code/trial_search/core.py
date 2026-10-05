@@ -704,10 +704,11 @@ class RetrievalMiddleware(AgentMiddleware):
         ):
             return gated
 
+        tool_output = handler(gated)
         # Execute the tool and record the actual result.
         return self._record(
             gated,
-            handler(gated),
+            tool_output
         )
 
 

@@ -141,6 +141,10 @@ def test_query_path_end_to_end():
     usage = {u["agent"]: u["usage"] for u in f["usage_by_agent"]}
     assert usage["supervisor"]["total_tokens"] == 560 + 940 and usage["chart_gen"]["total_tokens"] == 1200
     assert "| USPS | 8051 |" in compose.seen[-1].content                                 # the composer saw the evidence
+    src = f["sources"]                                                                   # the citation
+    assert len(src) == 1 and src[0]["agent"] == "nlq" and src[0]["query_language"] == "SQL"
+    assert src[0]["sources"] == ["ecom.shipments"] and src[0]["row_count"] == 5
+    assert src[0]["query"].startswith("SELECT carrier") and src[0]["question"] == "Shipments per carrier"
 
 
 def test_answer_path_needs_no_specialist():
@@ -160,6 +164,7 @@ def test_a_failing_nlq_still_produces_an_answer(monkeypatch):
     events = run(RouteDecision(action="query", questions=["x"], rationale="r"), Compose(["Sorry, the data agent was unavailable."]))
     f = events[-1]
     assert f["type"] == "final" and "data agent failed" in f["reasoning"] and f["artifacts"]["table"] is None
+    assert f["sources"] == []                                                            # a failed call is not cited
 
 
 def test_supervisor_a2a_wire(monkeypatch):
