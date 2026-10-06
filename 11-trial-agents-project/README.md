@@ -107,8 +107,29 @@ cause and run the same command again: what exists is found and reused.
    ```
 3. **Deploy-time Python packages** (in your virtualenv):
    ```bash
-   pip install boto3 neo4j
+   pip install boto3 neo4j httpx
    ```
+   `httpx` is for `deploy.py --image`, which copies a prebuilt image from
+   Docker Hub into ECR without Docker.
+
+### Prebuilt images — deploying without Docker
+
+The instructor publishes every image once (`docker login` first):
+
+```bash
+python publish_images.py --user <dockerhub-user> --tag 1.0
+```
+
+It runs each component's `deploy.py --publish`, then checks each image can be
+pulled anonymously — a private Docker Hub repository is reported, not passed.
+Students then add `--image` to every deploy and need no Docker at all:
+
+```bash
+cd trial_graph  && python deploy.py --image <dockerhub-user>/trial-graph-agent:1.0
+cd ../trial_search && python deploy.py --image <dockerhub-user>/trial-search-agent:1.0
+cd ../supervisor   && python deploy.py --image <dockerhub-user>/trial-supervisor-agent:1.0
+cd ../webapp/deploy && python deploy.py --image <dockerhub-user>/trial-webapp-backend:1.0
+```
 
 ### Step 1 — Deploy trial_graph
 

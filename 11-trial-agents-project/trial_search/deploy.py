@@ -2,6 +2,8 @@
 """One-click setup for trial_search.
 
     python deploy.py --pinecone-index rag-docs
+    python deploy.py --image <you>/trial-search-agent:1.0     copy a prebuilt image from Docker Hub (NO Docker)
+    python deploy.py --publish <you>/trial-search-agent:1.0   instructor: build + push to Docker Hub, then stop
 
     STEP 1   secrets      trial-search/pinecone, trial-search/cohere,
                           trial-agents/openai (placeholders if new);
@@ -75,8 +77,22 @@ def _require(name: str, owner: str) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pinecone-index", default="rag-docs")
+    ap.add_argument("--image", help="Docker Hub image to deploy, e.g. <you>/trial-search-agent:1.0 "
+                                    "(no Docker needed: copied into ECR over HTTPS)")
+    ap.add_argument("--publish", help="instructor: build linux/arm64, push to this Docker Hub "
+                                      "image, and stop")
     args = ap.parse_args()
-    preflight.run(needs_gateway=True)
+    if args.publish:
+        # Publishing needs Docker and a `docker login` to Docker Hub — no AWS
+        # resource is created or changed.
+        from infra import image_copy
+        print("=== preflight ===")
+        preflight.check_docker()
+        image_copy.publish(args.publish, str(HERE / "agent_code"))
+        print(f"\npublished {args.publish} — students deploy it with: "
+              f"python deploy.py --image {args.publish}")
+        return
+    preflight.run(needs_gateway=True, needs_docker=not args.image)
     prefix = config_store.prefix(AGENT)
 
     print("=== observability: CloudWatch Transaction Search (once per account) ===")
@@ -125,7 +141,11 @@ def main() -> None:
     role_arn = runtime_iam.runtime_role(
         gateway_arn=gw["gatewayArn"], ecr_repo_arn=repo_arn, guardrail_arn=gr["arn"],
         prompt_arns=[prompt["arn"]], secret_arn=openai_arn, param_prefix=prefix)
-    image_uri = runtime_deploy.build_and_push(repo_uri, str(HERE / "agent_code"))
+    if args.image:
+        from infra import image_copy
+        image_uri = image_copy.copy(args.image, repo_uri)
+    else:
+        image_uri = runtime_deploy.build_and_push(repo_uri, str(HERE / "agent_code"))
     runtime_arn = runtime_deploy.deploy_runtime(image_uri, role_arn, {
         "PARAM_PREFIX": prefix,
         "AWS_REGION": boto3.Session().region_name or "us-east-1"})

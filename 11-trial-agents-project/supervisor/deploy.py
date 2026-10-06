@@ -2,6 +2,8 @@
 """One-click setup for the Supervisor.
 
     python deploy.py
+    python deploy.py --image <you>/trial-supervisor-agent:1.0     copy a prebuilt image from Docker Hub (NO Docker)
+    python deploy.py --publish <you>/trial-supervisor-agent:1.0   instructor: build + push to Docker Hub, then stop
 
     STEP 1  registry     read /trial-agents/registry/* — every specialist that has
                          deployed. Stops here if there are none.
@@ -31,6 +33,7 @@ WHAT THIS DOES NOT DO
     It creates no Gateway or Lambda. Its one tool, call_agent, invokes the
     specialists' runtimes directly (agent_code/supervisor/agent_client.py).
 """
+import argparse
 import json
 from pathlib import Path
 
@@ -60,7 +63,23 @@ def _pinecone_secret() -> tuple[str, str]:
 
 
 def main() -> None:
-    preflight.run(needs_gateway=False)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--image", help="Docker Hub image to deploy, e.g. <you>/trial-supervisor-agent:1.0 "
+                                    "(no Docker needed: copied into ECR over HTTPS)")
+    ap.add_argument("--publish", help="instructor: build linux/arm64, push to this Docker Hub "
+                                      "image, and stop")
+    args = ap.parse_args()
+    if args.publish:
+        # Publishing needs Docker and a `docker login` to Docker Hub — no AWS
+        # resource is created or changed.
+        from infra import image_copy
+        print("=== preflight ===")
+        preflight.check_docker()
+        image_copy.publish(args.publish, str(HERE / "agent_code"))
+        print(f"\npublished {args.publish} — students deploy it with: "
+              f"python deploy.py --image {args.publish}")
+        return
+    preflight.run(needs_gateway=False, needs_docker=not args.image)
     prefix = config_store.prefix(AGENT)
 
     print("=== observability: CloudWatch Transaction Search (once per account) ===")
@@ -115,7 +134,11 @@ def main() -> None:
         secret_arn=openai_arn, param_prefix=prefix,
         registry_path=config_store.REGISTRY_PATH,
         memory_table_arn=memory_table_arn, pinecone_secret_arn=pinecone_arn)
-    image_uri = runtime_deploy.build_and_push(repo_uri, str(HERE / "agent_code"))
+    if args.image:
+        from infra import image_copy
+        image_uri = image_copy.copy(args.image, repo_uri)
+    else:
+        image_uri = runtime_deploy.build_and_push(repo_uri, str(HERE / "agent_code"))
     runtime_arn = runtime_deploy.deploy_runtime(image_uri, role_arn, {
         "PARAM_PREFIX": prefix,
         "AWS_REGION": boto3.Session().region_name or "us-east-1"})

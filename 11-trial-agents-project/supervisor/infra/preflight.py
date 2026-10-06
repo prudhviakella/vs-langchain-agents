@@ -136,11 +136,17 @@ def check_permissions(session, caller_arn: str, actions: list[str]) -> list[str]
     return denied
 
 
-def run(needs_gateway: bool, session=None, sh=_sh) -> None:
+def run(needs_gateway: bool, session=None, sh=_sh, needs_docker: bool = True) -> None:
+    """needs_docker=False for `deploy.py --image`: the image is copied from
+    Docker Hub into ECR over HTTPS (infra/image_copy.py), so Docker is never
+    started and its absence is not an error."""
     print("=== preflight ===")
     session = session or boto3.Session()
     _, caller, _ = check_aws(session)
-    check_docker(sh)
+    if needs_docker:
+        check_docker(sh)
+    else:
+        print("  Docker   not needed — the image is copied from Docker Hub")
 
     actions = COMMON + (GATEWAY if needs_gateway else [])
     if transaction_search_enabled(session) is not True:

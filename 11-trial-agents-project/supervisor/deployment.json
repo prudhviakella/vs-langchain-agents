@@ -20,7 +20,7 @@
     "system": {
       "id": "QHPW1MAULF",
       "arn": "arn:aws:bedrock:us-east-1:234360896963:prompt/QHPW1MAULF",
-      "version": "5",
+      "version": "6",
       "variables": [
         "available_agents",
         "max_agent_calls_per_turn"
@@ -29,8 +29,9 @@
     "compose": {
       "id": "P50MU2WD6K",
       "arn": "arn:aws:bedrock:us-east-1:234360896963:prompt/P50MU2WD6K",
-      "version": "2",
+      "version": "3",
       "variables": [
+        "analyst",
         "evidence",
         "question"
       ]
