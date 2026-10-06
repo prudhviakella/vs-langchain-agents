@@ -53,6 +53,16 @@ class SupervisorDecision(BaseModel):
                     "'the sponsor of IMbrave150 (NCT03434379)'). Empty when "
                     "the question already stands alone.",
     )
+    episode: str = Field(
+        default="",
+        description="One or two sentences recording what this turn established, "
+                    "with identifiers, for this analyst to find in a LATER "
+                    "conversation: 'Compared the exclusion criteria of NCT... and "
+                    "NCT...; both exclude prior anti-PD-1 therapy.' Empty for small "
+                    "talk, clarifications, out-of-scope questions, memory-only turns "
+                    "and turns that found nothing. Written to episodic memory after "
+                    "the answer is composed.",
+    )
     out_of_scope: bool = Field(
         default=False,
         description="True when the question is not about clinical trials at all "

@@ -1,5 +1,9 @@
 """Supervisor memory and history — phase 1 of the application build.
 
+    OVERVIEW   what memory holds is shown to the routing model on every
+               model call, and the stored facts to the composer
+    EPISODE    SupervisorDecision.episode is written after compose — only
+               for a turn where a specialist call succeeded
     STORE      one record in DynamoDB and Pinecone under one memory_id;
                recall is scoped to the user; a restated fact is updated,
                not duplicated
@@ -40,8 +44,27 @@ def embed(text: str) -> list[float]:
 
 
 class Table:
+    """put_item and query, shaped like the boto3 Table resource. query honours
+    the one key condition memory.py uses, pages of 2 items, and Select=COUNT —
+    so the pagination loop is exercised."""
     def __init__(self): self.items = {}
     def put_item(self, Item): self.items[(Item["user_id"], Item["memory_id"])] = Item
+
+    def query(self, KeyConditionExpression, ExpressionAttributeValues, Select=None,
+              ExclusiveStartKey=None):
+        assert KeyConditionExpression == "user_id = :u AND begins_with(memory_id, :k)"
+        user, prefix = ExpressionAttributeValues[":u"], ExpressionAttributeValues[":k"]
+        rows = sorted((v for (u, m), v in self.items.items()
+                       if u == user and m.startswith(prefix)), key=lambda i: i["memory_id"])
+        start = ExclusiveStartKey["memory_id"] if ExclusiveStartKey else ""
+        rows = [r for r in rows if r["memory_id"] > start]
+        page, more = rows[:2], len(rows) > 2
+        out = {"Count": len(page)}
+        if Select != "COUNT":
+            out["Items"] = page
+        if more:
+            out["LastEvaluatedKey"] = {"user_id": user, "memory_id": page[-1]["memory_id"]}
+        return out
 
 
 class Index:
@@ -104,9 +127,10 @@ def test_a_restated_fact_updates_instead_of_duplicating(fresh):
 
 def test_episodes_carry_the_conversation_and_recall_is_fenced(fresh):
     table, _ = fresh
-    core.CONVERSATION.set("conv-123")
-    run_tool(memory.record_episode, summary="Checked IMbrave150 (NCT03434379) exclusion "
-             "criteria; hepatic encephalopathy excluded.", outcome="answered")
+    record = memory.write_episode("Checked IMbrave150 (NCT03434379) exclusion "
+                                  "criteria; hepatic encephalopathy excluded.",
+                                  "answered", "conv-123")
+    assert record["tool"] == "record_episode" and record["succeeded"]
     [item] = table.items.values()
     assert item["conversation_id"] == "conv-123" and item["kind"] == "episodic"
 
@@ -293,3 +317,115 @@ def test_pinecone_calls_carry_a_ca_bundle_that_does_not_depend_on_the_os(monkeyp
     monkeypatch.setattr(ms.urllib.request, "urlopen", urlopen)
     assert ms.ensure_index("pc-key") == ms.INDEX
     assert seen["context"] is ms._TLS
+
+
+# ── OVERVIEW: the model sees what memory holds ───────────────────────────
+def test_overview_shows_facts_in_full_and_counts_episodes(fresh):
+    for i in range(3):
+        run_tool(memory.remember_fact, fact=f"Distinct preference number {i} about area {i}.",
+                 topic="preference")
+    for i in range(5):
+        memory.write_episode(f"episode {i}", "answered", "c")
+    view = memory.overview()
+    assert (view.available, view.fact_count, view.episode_count) == (True, 3, 5)
+    text = view.for_router()
+    assert "Stored facts: 3. Recorded episodes: 5." in text
+    assert text.count("<untrusted_data>") == 1 and "Distinct preference number 2" in text
+
+
+def test_overview_caps_facts_and_says_more_exist(fresh):
+    for i in range(memory.MAX_FACTS_IN_CONTEXT + 3):
+        run_tool(memory.remember_fact, fact=f"Unrelated fact {i} zz{i} qq{i}.")
+    view = memory.overview()
+    assert view.fact_count == memory.MAX_FACTS_IN_CONTEXT + 3
+    assert len(view.facts) == memory.MAX_FACTS_IN_CONTEXT
+    assert "recall_facts searches the rest" in view.for_router()
+
+
+def test_overview_without_a_user_says_memory_is_unavailable(fresh):
+    memory.USER.set(None)
+    view = memory.overview()
+    assert not view.available and "Do not call memory tools" in view.for_router()
+    assert view.for_composer() == "No stored preferences."
+
+
+def _orchestrate(script_route, compose_text="answer", specialist=None, template=None):
+    """One full turn. Returns (response, every message list each model saw)."""
+    seen = []
+
+    class Recording(Fake):
+        def _generate(self, messages, *args, **kwargs):
+            seen.append(messages)
+            return super()._generate(messages, *args, **kwargs)
+
+    agent_client.call_specialist = specialist or (lambda *a: {
+        "result_shape": "table", "columns": ["nctId"], "rows": [["NCT1"]]})
+    models = iter([Recording(messages=iter(script_route)),
+                   Recording(messages=iter([AIMessage(content=compose_text)]))])
+    cfg = S if template is None else S.__class__(**{**S.__dict__, "compose_template": template})
+    config.use(cfg)
+    real = cfg.__class__.chat_model
+    cfg.__class__.chat_model = lambda self: next(models)
+    try:
+        response = asyncio.run(core.orchestrate("q", "c" * 36, history=[], user_id="prudhvi"))
+    finally:
+        cfg.__class__.chat_model = real
+        config.use(S)
+    return response, seen
+
+
+def test_router_sees_the_memory_overview_on_its_system_message(fresh):
+    run_tool(memory.remember_fact, fact="Focuses on oncology trials.", topic="research focus")
+    _, seen = _orchestrate([
+        call("call_agent", agent_name="trial_graph", question="q", rationale="r"),
+        call("SupervisorDecision", **DECISION)])
+    from langchain_core.messages import SystemMessage
+    system = [m for m in seen[0] if isinstance(m, SystemMessage)]
+    assert system and "THIS ANALYST'S MEMORY" in system[0].content
+    assert "Focuses on oncology trials." in system[0].content
+    assert "test prompt" in system[0].content, "the managed prompt is kept, not replaced"
+
+
+def test_composer_sees_the_stored_preferences(fresh):
+    run_tool(memory.remember_fact, fact="Prefers results as tables.", topic="format")
+    _, seen = _orchestrate([
+        call("call_agent", agent_name="trial_graph", question="q", rationale="r"),
+        call("SupervisorDecision", **DECISION)],
+        template="Q: {{question}}\nA: {{analyst}}\nE: {{evidence}}")
+    assert "Prefers results as tables." in seen[-1][0].content
+
+
+def test_the_decisions_episode_is_recorded_after_a_successful_call(fresh):
+    table, _ = fresh
+    response, _ = _orchestrate([
+        call("call_agent", agent_name="trial_graph", question="q", rationale="r"),
+        call("SupervisorDecision", **DECISION, episode="Listed trials NCT1 for the analyst.")])
+    episodes = [i for i in table.items.values() if i["kind"] == "episodic"]
+    assert len(episodes) == 1 and episodes[0]["conversation_id"] == "c" * 36
+    assert episodes[0]["outcome"] == "answered"
+    assert [t.tool for t in response.tool_calls] == ["record_episode"]
+
+
+def test_no_episode_without_a_successful_specialist_call(fresh):
+    """A memory-only turn, or one whose every call failed, established nothing."""
+    table, _ = fresh
+    _orchestrate([call("remember_fact", fact="Focuses on phase 3 trials."),
+                  call("SupervisorDecision", **DECISION, episode="Stored a preference.")])
+
+    def failing(*a):
+        raise agent_client.AgentCallError("down")
+    _orchestrate([call("call_agent", agent_name="trial_graph", question="q", rationale="r"),
+                  call("SupervisorDecision", **DECISION, episode="Tried the graph.")],
+                 specialist=failing)
+    assert not [i for i in table.items.values() if i["kind"] == "episodic"]
+
+
+def test_record_episode_is_no_longer_a_tool():
+    assert memory.TOOL_NAMES == {"remember_fact", "recall_facts", "recall_episodes"}
+
+
+def test_no_trial_ids_in_supervisor_prompts():
+    import re
+    for name in ("system.md", "compose.md"):
+        text = (fakes.ROOT / "supervisor" / "prompts" / name).read_text()
+        assert not re.search(r"NCT\d{8}", text), f"an NCT number is hard-coded in {name}"

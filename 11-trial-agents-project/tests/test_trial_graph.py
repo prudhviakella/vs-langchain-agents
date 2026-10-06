@@ -97,3 +97,28 @@ def test_repair_budget_refuses_after_three_failures():
 def test_decision_without_a_query_is_not_executed():
     _, response = run([DECIDE], [])
     assert response.result_shape == "not_executed"
+
+
+def test_two_queries_in_one_turn_run_one_at_a_time():
+    """Production crash: the model put two execute_cypher calls in one message.
+    Both ran in one graph step and both wrote `captured` ->
+    InvalidUpdateError. Now the first runs, the second is refused with a
+    message (not counted as a repair), and the model can send it again."""
+    from langchain_core.messages import AIMessage
+    first, second = "MATCH (t:Trial) RETURN t.nctId", "MATCH (s:Sponsor) RETURN s.name"
+    both = AIMessage(content="", tool_calls=[
+        {"name": P + "execute_cypher", "args": {"query": first}, "id": "q1"},
+        {"name": P + "find_entity_by_name", "args": {"name": "Pfizer"}, "id": "r1"},
+        {"name": P + "execute_cypher", "args": {"query": second}, "id": "q2"}])
+    sent = []
+    result, response = run([both, call(P + "execute_cypher", query=second), DECIDE], sent)
+
+    queries = [a["query"] for n, a in sent if n == "execute_cypher"]
+    assert queries == [first + " LIMIT 500", second + " LIMIT 500"], "in order, one per turn"
+    assert any(n == "find_entity_by_name" for n, _ in sent), "resolving stays parallel"
+    refused = [m for m in result["messages"]
+               if type(m).__name__ == "ToolMessage" and m.tool_call_id == "q2"]
+    assert refused and "REFUSED" in refused[0].content
+    assert result.get("repair_count", 0) == 0
+    assert result["execute_calls"] == 2
+    assert response.cypher == second + " LIMIT 500" and response.result_shape == "table"

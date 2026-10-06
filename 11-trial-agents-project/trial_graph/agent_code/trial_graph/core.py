@@ -9,7 +9,8 @@
         ├─ build_agent(tools)   create_agent + ToolStrategy(ModelDecision)
         │     │
         │     └─ CypherMiddleware       (one class, one state schema)
-        │           BEFORE execute      reject writes, clamp/inject LIMIT
+        │           BEFORE execute      one query per model turn,
+        │                               reject writes, clamp/inject LIMIT
         │           AFTER  execute      rows -> state, summary -> model,
         │                               failures counted against a budget
         │
@@ -26,6 +27,9 @@ WHERE EVERYTHING COMES FROM
 
 LOOP ENGINEERING — WHAT BOUNDS THIS LOOP
 
+    one per turn  a model turn may ask for several execute_cypher calls at
+                  once (parallel tool calls). Only the first runs; the rest
+                  are refused with a message — see ONE QUERY PER TURN below
     writes        rejected before the query reaches the Gateway
     row cap       a LIMIT is injected when absent, and lowered when the
                   model asks for more than row_cap
@@ -57,6 +61,23 @@ FIVE FACTS VERIFIED AT RUNTIME, NOT ASSUMED
        lets Bedrock constrain the whole response to JSON, making a tool
        call structurally impossible — the model would emit a confident
        decision having run no query at all.
+
+ONE QUERY PER TURN
+
+The OpenAI model may put two execute_cypher calls in one message. LangGraph
+then runs both in the SAME step, and both write `captured` and
+`executed_cypher`. Those keys hold one result, with no reducer, so the
+step fails:
+
+    InvalidUpdateError: At key 'captured': Can receive only one value per step
+
+That was a production crash. A reducer would only hide it: one of the two
+results would still be dropped, chosen by task order rather than by the
+model. So the second call is refused instead, with a message the model
+reads — it sees the first result, then runs the next query if it still
+needs one. Queries in this loop usually depend on each other (resolve,
+then anchor; fail, then repair), so running them in order loses nothing.
+Resolving names and validating stay parallel: they write no result.
 
 WHY THE MODEL NEVER SEES THE ROWS
 
@@ -176,6 +197,17 @@ class CypherMiddleware(AgentMiddleware):
         return self._record(gated, await handler(gated))
 
     # ── BEFORE ──────────────────────────────────────────────────────────
+    @staticmethod
+    def _first_execute_in_turn(state: dict, call_id: str) -> bool:
+        """True if this call is the first execute_cypher of the model message
+        that requested it. That message is found by the call's own id."""
+        for message in reversed(state.get("messages", [])):
+            calls = getattr(message, "tool_calls", None) or []
+            if any(c.get("id") == call_id for c in calls):
+                executes = [c["id"] for c in calls if _kind(c.get("name", "")) == EXECUTE]
+                return executes[0] == call_id
+        return True        # message not found: nothing to compare with
+
     def _gate(self, request):
         kind = _kind(request.tool_call["name"])
         if kind not in (VALIDATE, EXECUTE):
@@ -184,6 +216,15 @@ class CypherMiddleware(AgentMiddleware):
         call_id = request.tool_call["id"]
         args = dict(request.tool_call["args"])
         query = str(args.get("query", ""))
+
+        # STEP 0 — one query per model turn (see ONE QUERY PER TURN)
+        if kind == EXECUTE and not self._first_execute_in_turn(state, call_id):
+            return ToolMessage(
+                tool_call_id=call_id,
+                content="REFUSED: only one execute_cypher runs per turn, and another "
+                        "query from this turn already ran. Read its result first; "
+                        "if you still need this query, send it again on its own. "
+                        "This does not count against your repair budget.")
 
         # STEP 1 — repair budget, execute only
         if kind == EXECUTE:

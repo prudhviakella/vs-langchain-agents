@@ -9,13 +9,21 @@ specialists, then composes the answer.
         ├─ route             PROBABILISTIC. The inner ReAct agent: an LLM
         │                    choosing which specialist to call, via one
         │                    tool (call_agent), bounded by middleware.
+        │                    Before it runs: the analyst's memory overview
+        │                    (memory.py) goes into its system message.
         │
         ├─ render_decision   DETERMINISTIC. Plain code over the shapes
         │                    already in state. No model call, and no
         │                    render TOOL for a model to forget to call.
         │
-        └─ compose           PROBABILISTIC. A separate LLM call writes
-                             the analyst-facing prose.
+        ├─ compose           PROBABILISTIC. A separate LLM call writes
+        │                    the analyst-facing prose, with the analyst's
+        │                    stored preferences beside the evidence.
+        │
+        └─ record_episode    DETERMINISTIC. Writes the episode the model
+                             put in its decision (SupervisorDecision.episode)
+                             to episodic memory. The model decided; this
+                             node only carries it out.
         │
         v
     SupervisorResponse
@@ -93,12 +101,12 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import tool
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from . import agent_client
+from . import agent_client, memory
 from .config import settings
 from .guardrail import GuardrailBlocked, GuardrailMiddleware, check
 from .tracing import set_span_attrs, span
@@ -120,6 +128,12 @@ DECISION_TOOL = "SupervisorDecision"
 # the calling context.
 CONVERSATION: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "conversation_id", default=None)
+
+# This turn's memory overview, read once in _route and shown to the model on
+# every model call by MemoryContextMiddleware. A ContextVar for the same
+# reason as CONVERSATION: per request, and not something the model can set.
+MEMORY_VIEW: contextvars.ContextVar["memory.Overview | None"] = contextvars.ContextVar(
+    "memory_view", default=None)
 
 
 def _clean(value) -> str:
@@ -317,6 +331,33 @@ class MemoryBudgetMiddleware(AgentMiddleware):
         return gated if isinstance(gated, ToolMessage) else await handler(gated)
 
 
+class MemoryContextMiddleware(AgentMiddleware):
+    """Appends THIS ANALYST'S MEMORY to the system message of every model call.
+
+    The system prompt itself is fixed, versioned in Prompt Management. What
+    one analyst has stored changes per request, so it is added here, at call
+    time, from MEMORY_VIEW — never written into the managed prompt.
+
+    WHAT THIS DOES NOT DO
+        It does not read memory. _route reads it once per turn; this only
+        shows what was read, so several model calls in a turn cost one read.
+    """
+
+    def _with_memory(self, request):
+        view = MEMORY_VIEW.get()
+        if view is None:
+            return request
+        base = request.system_message.content if request.system_message else ""
+        return request.override(system_message=SystemMessage(
+            content=f"{base}\n\n{view.for_router()}"))
+
+    def wrap_model_call(self, request, handler):
+        return handler(self._with_memory(request))
+
+    async def awrap_model_call(self, request, handler):
+        return await handler(self._with_memory(request))
+
+
 class RequireAgentCallMiddleware(AgentMiddleware):
     """Makes a SupervisorDecision with answerable=True and zero specialist
     calls structurally impossible.
@@ -388,6 +429,7 @@ def build_react_agent(model=None, cfg=None):
         response_format=ToolStrategy(SupervisorDecision),
         middleware=[GuardrailMiddleware(s.guardrail_id, s.guardrail_version,
                                         decision_tool=DECISION_TOOL),
+                    MemoryContextMiddleware(),
                     AgentCallBudgetMiddleware(s), MemoryBudgetMiddleware(s),
                     RequireAgentCallMiddleware()])
 
@@ -402,6 +444,7 @@ class GraphState(TypedDict, total=False):
     usage: Any
     render_target: str
     composed_answer: str
+    memory_view: Any            # memory.Overview, read once at the start of the turn
 
 
 def history_messages(history: list[dict] | None, limit: int) -> list:
@@ -425,9 +468,17 @@ def history_messages(history: list[dict] | None, limit: int) -> list:
 
 async def _route(state: GraphState) -> dict:
     """PROBABILISTIC. Runs the inner agent and lifts what the rest of the
-    graph needs into this graph's own state."""
+    graph needs into this graph's own state.
+
+    STEP 1  read the analyst's memory overview (one DynamoDB query per kind)
+    STEP 2  run the agent; MemoryContextMiddleware shows it the overview
+    STEP 3  lift decision, calls and results into graph state
+    """
+    view = await asyncio.to_thread(memory.overview)
+    MEMORY_VIEW.set(view)
     prior = history_messages(state.get("history"), settings().max_history_messages)
-    with span("supervisor.route", history_messages=len(prior)) as sp:
+    with span("supervisor.route", history_messages=len(prior),
+              memory_facts=view.fact_count, memory_episodes=view.episode_count) as sp:
         result = await build_react_agent().ainvoke(
             {"messages": [*prior, HumanMessage(content=state["question"])],
              "history_turns": len(prior)})
@@ -435,6 +486,7 @@ async def _route(state: GraphState) -> dict:
                        memory_calls=result.get("memory_calls", 0),
                        answerable=result["structured_response"].answerable)
     return {"decision": result["structured_response"],
+            "memory_view": view,
             "agent_calls": result.get("agent_calls", []),
             "tool_calls": result.get("tool_calls", []),
             "captured_results": result.get("captured_results", {}),
@@ -637,9 +689,11 @@ async def _compose(state: GraphState) -> dict:
     from .config import render
     s = settings()
     decision = state.get("decision")
+    view = state.get("memory_view")
     prompt = render(s.compose_template, {
         "question": (decision.resolved_question if decision and decision.resolved_question
                      else state["question"]),
+        "analyst": view.for_composer() if view else "No stored preferences.",
         "evidence": evidence(state.get("captured_results", {}))})
     with span("supervisor.compose", evidence_chars=len(prompt)):
         response = await s.chat_model().ainvoke([HumanMessage(content=prompt)])
@@ -654,15 +708,42 @@ async def _compose(state: GraphState) -> dict:
     return {"composed_answer": text}
 
 
+def _record_episode(state: GraphState) -> dict:
+    """DETERMINISTIC. Writes SupervisorDecision.episode to episodic memory.
+
+    The model decided WHAT to record by filling the field. This node only
+    refuses to record a turn that established nothing, whatever the field
+    says:
+        out of scope, or a clarifying question       nothing was researched
+        no specialist call succeeded                 nothing was found
+        memory unavailable                           nowhere to write
+    The write is recorded as a tool call, so the analyst sees it beside the
+    memory tools the model called.
+    """
+    decision = state.get("decision")
+    summary = (decision.episode or "").strip() if decision else ""
+    view = state.get("memory_view")
+    researched = any(c.get("succeeded") for c in state.get("agent_calls", []))
+    if (not summary or decision.out_of_scope or decision.clarifying_question
+            or not researched or not (view and view.available)):
+        return {}
+    outcome = "answered" if decision.answerable else "not answerable"
+    with span("supervisor.record_episode", outcome=outcome):
+        record = memory.write_episode(summary, outcome, CONVERSATION.get() or "")
+    return {"tool_calls": [*state.get("tool_calls", []), record]}
+
+
 def build_graph():
     graph = StateGraph(GraphState)
     graph.add_node("route", _route)
     graph.add_node("render_decision", _render_decision)
     graph.add_node("compose", _compose)
+    graph.add_node("record_episode", _record_episode)
     graph.add_edge(START, "route")
     graph.add_edge("route", "render_decision")
     graph.add_edge("render_decision", "compose")
-    graph.add_edge("compose", END)
+    graph.add_edge("compose", "record_episode")
+    graph.add_edge("record_episode", END)
     return graph.compile(name="supervisor")
 
 
