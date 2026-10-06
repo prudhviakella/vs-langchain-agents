@@ -3,8 +3,9 @@
     orchestrate(question)
         │
         ├─ connect_tools()         SigV4-signed MCP session to the Gateway
-        │                          -> semantic_search, expand_neighbors,
-        │                             expand_table as LangChain tools
+        │                          -> resolve_trial, semantic_search,
+        │                             expand_neighbors, expand_table
+        │                             as LangChain tools
         │
         ├─ build_agent(tools)      create_agent + ToolStrategy(ModelDecision)
         │     │
@@ -12,11 +13,16 @@
         │           BEFORE a tool runs      call budget, window clamp,
         │                                   token budget, dedupe — by
         │                                   REWRITING the tool's arguments
-        │           AFTER it returns        passages -> state,
+        │           AFTER it returns        passages / resolved trials -> state,
         │                                   counters -> state,
         │                                   a readable view -> the model
         │
         └─ assemble                 TrialSearchResponse from STATE
+
+    A question that names a trial:
+        resolve_trial("IMbrave150")  ->  NCT03434379, doc_id ...
+        semantic_search("exclusion criteria", doc_id=...)
+        expand_* if a passage is cut off  ->  decide
 
 WHERE EVERYTHING COMES FROM
 
@@ -25,6 +31,7 @@ WHERE EVERYTHING COMES FROM
                     Parameter Store; the budgets below are rendered into it
     budgets         Parameter Store
     guardrail       Bedrock guardrail via ApplyGuardrail — guardrail.py
+    trial identity  the registry graph, through resolve_trial — never the prompt
     All loaded once, at container start, by config.settings().
 
 LOOP ENGINEERING — WHAT BOUNDS THIS LOOP
@@ -73,6 +80,9 @@ WHAT THIS DOES NOT DO
       (Cohere, see lambda_tools/rerank.py) and decides WHICH passages come
       back; this file keeps them. The final response is then ordered by
       document and position — reading order, not relevance order.
+    - It does not know which trials exist. No list of trials or documents
+      is written anywhere in this agent; resolve_trial reads them from the
+      graph at question time.
 """
 from __future__ import annotations
 
@@ -90,18 +100,20 @@ from langgraph.types import Command
 
 from .config import settings
 from .guardrail import GuardrailBlocked, GuardrailMiddleware
-from .schemas import (ModelDecision, Passage, RetrievalStats, SearchQuery, TrialSearchResponse,
-                      collect_usage)
+from .schemas import (ModelDecision, Passage, ResolvedTrial, RetrievalStats, SearchQuery,
+                      TrialSearchResponse, collect_usage)
 
 log = logging.getLogger("agent.trial_search.core")
 
-SEARCH, NEIGHBORS, TABLE = "semantic_search", "expand_neighbors", "expand_table"
+RESOLVE, SEARCH, NEIGHBORS, TABLE = ("resolve_trial", "semantic_search",
+                                     "expand_neighbors", "expand_table")
+EXPANSIONS = (NEIGHBORS, TABLE)
 
 
 def _kind(tool_name: str) -> str | None:
     """Gateway tool names may carry a target prefix
     ("trial-search-tools___expand_table"). Match on the suffix."""
-    return next((k for k in (SEARCH, NEIGHBORS, TABLE) if tool_name.endswith(k)), None)
+    return next((k for k in (RESOLVE, SEARCH, NEIGHBORS, TABLE) if tool_name.endswith(k)), None)
 
 
 # ── MCP connection ──────────────────────────────────────────────────────
@@ -128,11 +140,13 @@ async def connect_tools():
 class RetrievalState(AgentState):
     """Every key the middleware writes. The reducers sum or append, so a
     Command update of {"neighbor_calls": 1} adds one — it never overwrites."""
+    resolve_calls: Annotated[int, operator.add]
     search_calls: Annotated[int, operator.add]
     neighbor_calls: Annotated[int, operator.add]
     table_calls: Annotated[int, operator.add]
     expansion_tokens: Annotated[int, operator.add]
     captured_passages: Annotated[list[dict], operator.add]
+    resolved_trials: Annotated[list[dict], operator.add]
     searches: Annotated[list[dict], operator.add]
 
 
@@ -167,7 +181,7 @@ def _fence(text: str) -> str:
 # ── the middleware ──────────────────────────────────────────────────────
 
 class RetrievalMiddleware(AgentMiddleware):
-    """Bounds and records the three retrieval tools. See module docstring."""
+    """Bounds and records the four tools. See module docstring."""
 
     state_schema = RetrievalState
 
@@ -175,11 +189,12 @@ class RetrievalMiddleware(AgentMiddleware):
         super().__init__()
         cfg = cfg or settings()
         self.cfg = cfg
-        self.limits = {SEARCH: cfg.max_searches_per_turn,
+        self.limits = {RESOLVE: cfg.max_resolve_calls,
+                       SEARCH: cfg.max_searches_per_turn,
                        NEIGHBORS: cfg.max_neighbor_calls,
                        TABLE: cfg.max_table_calls}
-        self.counter = {SEARCH: "search_calls", NEIGHBORS: "neighbor_calls",
-                        TABLE: "table_calls"}
+        self.counter = {RESOLVE: "resolve_calls", SEARCH: "search_calls",
+                        NEIGHBORS: "neighbor_calls", TABLE: "table_calls"}
 
     # sync and async share one implementation
     def wrap_tool_call(self, request, handler):
@@ -209,9 +224,9 @@ class RetrievalMiddleware(AgentMiddleware):
                 tool_call_id=call_id,
                 content=f"REFUSED: {kind} call limit reached "
                         f"({used_calls}/{self.limits[kind]} this question). "
-                        "Answer from the passages you have and state in `note` "
+                        "Answer from what you have and state in `note` "
                         "what is missing.")
-        if kind == SEARCH:
+        if kind not in EXPANSIONS:
             return request
 
         # STEP 2 — shared token budget for expansions
@@ -238,10 +253,10 @@ class RetrievalMiddleware(AgentMiddleware):
             return result
         call_id = request.tool_call["id"]
         payload = _payload(result)
+        failed = payload is None or bool(payload.get("error"))
 
         # The search as it ran — what the analyst sees under "Queries".
         # Taken from the executed call and its result, not from the model.
-        failed = payload is None or bool(payload.get("error"))
         searches = []
         if kind == SEARCH:
             args = request.tool_call.get("args", {})
@@ -262,14 +277,22 @@ class RetrievalMiddleware(AgentMiddleware):
                 "messages": [ToolMessage(tool_call_id=call_id,
                                          content=f"ERROR from {kind}: {detail}")]})
 
-        passages = payload.get("passages", [])
-        tokens = int(payload.get("tokens_used", 0)) if kind != SEARCH else 0
         state = request.state or {}
-        stats = {k: state.get(k, 0) for k in
-                 ("search_calls", "neighbor_calls", "table_calls", "expansion_tokens")}
+        stats = {k: state.get(k, 0) for k in ("resolve_calls", "search_calls", "neighbor_calls",
+                                              "table_calls", "expansion_tokens")}
         stats[self.counter[kind]] += 1
-        stats["expansion_tokens"] += tokens
 
+        if kind == RESOLVE:
+            candidates = payload.get("candidates", [])
+            return Command(update={
+                "resolve_calls": 1,
+                "resolved_trials": candidates,
+                "messages": [ToolMessage(tool_call_id=call_id,
+                                         content=self._resolve_view(payload, candidates, stats))]})
+
+        passages = payload.get("passages", [])
+        tokens = int(payload.get("tokens_used", 0)) if kind in EXPANSIONS else 0
+        stats["expansion_tokens"] += tokens
         return Command(update={
             self.counter[kind]: 1,
             "expansion_tokens": tokens,
@@ -279,8 +302,39 @@ class RetrievalMiddleware(AgentMiddleware):
                                      content=self._view(kind, payload, passages, stats))]})
 
     # ── what the model reads ────────────────────────────────────────────
-    def _view(self, kind, payload, passages, stats) -> str:
+    def _budget_line(self, stats) -> str:
         c = self.cfg
+        return (f"budget used: resolve {stats['resolve_calls']}/{c.max_resolve_calls}, "
+                f"search {stats['search_calls']}/{c.max_searches_per_turn}, "
+                f"neighbors {stats['neighbor_calls']}/{c.max_neighbor_calls}, "
+                f"table {stats['table_calls']}/{c.max_table_calls}, "
+                f"expansion tokens {stats['expansion_tokens']}/{c.expansion_token_budget}")
+
+    def _resolve_view(self, payload, candidates, stats) -> str:
+        """One line per candidate. Titles come from the registry, so they are
+        fenced like passage text."""
+        lines = [f"resolve_trial({payload.get('name', '')!r}): {len(candidates)} candidate(s)"]
+        if not candidates:
+            lines.append("No trial in the graph matches this name. Do not guess a doc_id; "
+                         "search unscoped, or set answerable=false and say the name was "
+                         "not found.")
+        if payload.get("truncated"):
+            lines.append("More trials may match: the name is too broad to identify one.")
+        lines.append("<untrusted_data>")
+        for t in candidates:
+            line = (f"nct_id={t.get('nct_id')} doc_id={t.get('doc_id') or 'NONE (no protocol)'} "
+                    f"score={t.get('score')}")
+            if t.get("acronym"):
+                line += f" acronym={_fence(t['acronym'])}"
+            if t.get("matched_conditions"):
+                line += f" matched_via_condition={[_fence(c) for c in t['matched_conditions']]}"
+            lines.append(line)
+            lines.append(f"  title: {_fence(t.get('title', ''))}")
+        lines.append("</untrusted_data>")
+        lines.append(self._budget_line(stats))
+        return "\n".join(lines)
+
+    def _view(self, kind, payload, passages, stats) -> str:
         lines = [f"{kind}: {len(passages)} passage(s)"]
         if kind == NEIGHBORS:
             lines.append(f"window={payload.get('window')} around position "
@@ -308,12 +362,7 @@ class RetrievalMiddleware(AgentMiddleware):
             lines.append(_fence(p.get("text", "")))
             lines.append("")
         lines.append("</untrusted_data>")
-
-        lines.append(
-            f"budget used: search {stats['search_calls']}/{c.max_searches_per_turn}, "
-            f"neighbors {stats['neighbor_calls']}/{c.max_neighbor_calls}, "
-            f"table {stats['table_calls']}/{c.max_table_calls}, "
-            f"expansion tokens {stats['expansion_tokens']}/{c.expansion_token_budget}")
+        lines.append(self._budget_line(stats))
         return "\n".join(lines)
 
 
@@ -333,17 +382,46 @@ def build_agent(tools: list, model=None, cfg=None):
                     RetrievalMiddleware(s)])
 
 
+def _resolved(result: dict) -> list[ResolvedTrial]:
+    """Every trial resolve_trial returned, first occurrence wins."""
+    unique: dict[str, ResolvedTrial] = {}
+    for t in result.get("resolved_trials", []):
+        if t.get("nct_id"):
+            unique.setdefault(t["nct_id"], ResolvedTrial(**t))
+    return list(unique.values())
+
+
+def _entities(resolved: list[ResolvedTrial], passages: list[Passage],
+              decision: ModelDecision) -> list[str]:
+    """The trials the answer is about, from data rather than from the model.
+
+    A resolved trial counts when a returned passage comes from its protocol.
+    Resolved candidates that contributed no passage are left out — they were
+    looked at, not answered about. With nothing resolved (a pattern question
+    across all protocols), the model's own list is all there is.
+    """
+    by_doc = {t.doc_id: t.nct_id for t in resolved if t.doc_id}
+    found = []
+    for p in passages:
+        nct = by_doc.get(p.doc_id)
+        if nct and nct not in found:
+            found.append(nct)
+    return found if resolved else list(decision.entities)
+
+
 def assemble(result: dict, cfg=None) -> TrialSearchResponse:
     """TrialSearchResponse from the finished loop's STATE.
 
     STEP 1  dedupe by chunk_id — the first capture wins, so a search hit
             keeps its score even if a later expansion also returned it
     STEP 2  order by document, then reading position
-    STEP 3  choose result_shape from what actually happened
+    STEP 3  entities from resolved trials x passage documents
+    STEP 4  choose result_shape from what actually happened
     """
     s = cfg or settings()
     decision: ModelDecision = result["structured_response"]
     stats = RetrievalStats(
+        resolve_calls=result.get("resolve_calls", 0),
         search_calls=result.get("search_calls", 0),
         neighbor_calls=result.get("neighbor_calls", 0),
         table_calls=result.get("table_calls", 0),
@@ -356,11 +434,17 @@ def assemble(result: dict, cfg=None) -> TrialSearchResponse:
         unique.setdefault(p["chunk_id"], p)
     passages = sorted((Passage(**p) for p in unique.values()),
                       key=lambda p: (p.doc_id, p.position if p.position is not None else 0))
+    resolved = _resolved(result)
 
-    common = dict(stats=stats, usage=usage, entities=decision.entities,
+    common = dict(stats=stats, usage=usage, resolved=resolved,
+                  entities=_entities(resolved, passages, decision),
                   result_note=decision.note,
                   searches=[SearchQuery(**q) for q in result.get("searches", [])])
     if stats.search_calls == 0:
+        # Resolving alone is not an answer: "no protocol for that trial" is
+        # reported by the model as unanswerable, which needs no search.
+        if not decision.answerable and stats.resolve_calls:
+            return TrialSearchResponse(result_shape="unanswerable", **common)
         return TrialSearchResponse(result_shape="not_executed", **{
             **common, "result_note": "No search was executed."})
     if not decision.answerable:

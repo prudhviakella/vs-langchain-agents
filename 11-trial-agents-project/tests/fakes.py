@@ -107,7 +107,7 @@ def settings_for(agent: str, **overrides):
     specific = {
         "trial_graph": dict(gateway_url="https://gw", row_cap=500, graph_node_cap=500,
                             max_repairs=3),
-        "trial_search": dict(gateway_url="https://gw", max_searches_per_turn=5,
+        "trial_search": dict(gateway_url="https://gw", max_resolve_calls=3, max_searches_per_turn=5,
                              max_neighbor_calls=3, max_table_calls=3, max_window=10,
                              expansion_token_budget=6000),
         "supervisor": dict(compose_template="Q: {{question}}\nE: {{evidence}}",

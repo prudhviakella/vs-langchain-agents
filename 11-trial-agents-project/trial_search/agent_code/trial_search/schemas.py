@@ -2,6 +2,7 @@
 
     model emits          ModelDecision        small judgment, no data
     tools write          captured_passages    in STATE, never retyped
+                         resolved_trials      in STATE, from resolve_trial
     orchestrate builds   TrialSearchResponse  from STATE + decision
 
 A passage has one shape whichever tool produced it. `origin` records
@@ -14,6 +15,11 @@ WHAT THIS DOES NOT DO
     ModelDecision does not carry passage text or chunk ids. The model
     cannot claim evidence it did not retrieve: every passage in the final
     response comes from a tool's own return value.
+
+    The final `entities` are not the model's when the graph knows them:
+    assemble() maps each passage's doc_id to its nctId through what
+    resolve_trial returned. The model's list is used only when no trial
+    was resolved (a pattern question searched across every protocol).
 """
 from __future__ import annotations
 
@@ -26,7 +32,8 @@ class ModelDecision(BaseModel):
     """The only structured output the model writes, after retrieving."""
     entities: list[str] = Field(
         default_factory=list,
-        description="doc_ids or trial identifiers the answer is grounded in.")
+        description="NCT numbers of the trials the answer is about, copied from "
+                    "resolve_trial results. Empty when no trial was resolved.")
     answerable: bool = Field(
         default=True,
         description="False if the corpus has no relevant passage. When False, "
@@ -65,8 +72,19 @@ class Passage(BaseModel):
     n_tokens: int | None = None
 
 
+class ResolvedTrial(BaseModel):
+    """One candidate resolve_trial returned — from the registry graph."""
+    nct_id: str
+    acronym: str = ""
+    title: str = ""
+    doc_id: str | None = None          # None: the trial has no protocol in the corpus
+    matched_conditions: list[str] = Field(default_factory=list)
+    score: float = 0.0
+
+
 class RetrievalStats(BaseModel):
     """What the loop actually spent — for the Supervisor and for traces."""
+    resolve_calls: int = 0
     search_calls: int = 0
     neighbor_calls: int = 0
     table_calls: int = 0
@@ -100,6 +118,9 @@ class TrialSearchResponse(BaseModel):
     passages: list[Passage] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
     result_note: str = ""
+    resolved: list[ResolvedTrial] = Field(
+        default_factory=list,
+        description="Every trial resolve_trial returned this turn, deduplicated.")
     stats: RetrievalStats = Field(default_factory=RetrievalStats)
     searches: list[SearchQuery] = Field(
         default_factory=list,

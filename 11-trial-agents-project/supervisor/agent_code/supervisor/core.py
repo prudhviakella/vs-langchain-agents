@@ -609,11 +609,14 @@ def evidence(captured_results: dict) -> str:
     return f"<untrusted_data>\n{body}\n</untrusted_data>"
 
 
-OUT_OF_SCOPE = ("I can only help with questions about the 20 clinical trials in this "
+# Fixed reply for an out-of-scope question. No trial names or counts: the
+# platform's trials come from the registry graph and change as it grows.
+OUT_OF_SCOPE = ("I can only help with questions about the clinical trials in this "
                 "platform — their sponsors, sites, phases, conditions and outcomes from the "
                 "registry, and what their protocols say about eligibility, design, endpoints, "
-                "dosing and safety. Try asking, for example, \"What are the exclusion criteria "
-                "of the IMbrave150 trial?\"")
+                "dosing and safety. Try asking which trials run in a country, or what a "
+                "trial's protocol — named by its NCT number or acronym — says about its "
+                "exclusion criteria.")
 
 
 async def _compose(state: GraphState) -> dict:

@@ -1,9 +1,15 @@
-"""trial_search's tool Lambda — three tools, one per retrieval case.
+"""trial_search's tool Lambda — four tools: one to find the protocol, three to read it.
 
     trial_search agent (LangGraph, AgentCore Runtime)
         │  MCP tool call, SigV4-signed
         v
     AgentCore Gateway ──► THIS LAMBDA (dispatch on tool name)
+        │
+        ├─ resolve_trial      WHICH PROTOCOL. A trial named in the question
+        │                     ("IMbrave150", "NCT03434379", "the glaucoma
+        │                     trial") -> its nctId, title and doc_id, read
+        │                     from the registry graph in Neo4j. Nothing about
+        │                     the corpus is written in the prompt.
         │
         ├─ semantic_search    ENTRY. Embed the question, query Pinecone for
         │                     a wide pool (RECALL), then Cohere re-ranks it
@@ -28,6 +34,27 @@ Taken from the original graph_rag package (answer.local, chunks.fetch_text):
 "The graph decides which chunks; the vector store returns what they say."
 Neo4j Chunk nodes carry no text by design. Pinecone carries the text. The
 join is chunk_id, and fetching by id is exact.
+
+The same split applies to identity. Which trial a name means, and which
+protocol document belongs to it, is a registry fact. The graph holds it:
+
+    (Document {docId})-[:ABOUT]->(Trial {nctId, acronym, briefTitle})
+                                       -[:TARGETS]->(Disease {name})
+
+An earlier version copied that mapping into the system prompt as a table of
+20 rows. That table had to be edited by hand for every new protocol, cost
+prompt tokens on every turn whether a trial was named or not, and stopped
+working at a few hundred trials. resolve_trial reads the same facts from
+the graph at question time, so a protocol added to the graph is findable
+with no prompt change.
+
+WHY resolve_trial LIVES HERE AND NOT ONLY IN trial_graph
+
+trial_graph can also resolve a name, but reaching it means the supervisor
+calls a second agent: a full LLM loop, about 20 seconds. This tool is one
+indexed Neo4j query from a Lambda that already holds the Neo4j credential
+for expand_neighbors. It uses the fulltext index trial_graph created
+(trial_graph/setup_neo4j.py), so both agents resolve names the same way.
 
 WHY NEIGHBOURS COME FROM NEO4J AND NOT FROM Pinecone next_id
 
@@ -55,6 +82,12 @@ WHAT THIS DOES NOT DO
     - It does not re-embed anything for expand_table. The summary's own
       stored vector is used as the query vector; the filter already
       narrows the result to exactly that table's fragments.
+    - resolve_trial does not pick one trial when a name fits several. It
+      returns every candidate with its score; choosing, or asking, is the
+      agent's decision.
+    - resolve_trial does not answer registry questions (sponsors, sites,
+      phases). It returns identity only: nctId, acronym, title, doc_id and
+      the conditions a name matched through.
 """
 import json
 import logging
@@ -87,6 +120,19 @@ HARD_MAX_FRAGMENTS = 50   # real max observed in the corpus: 18
 # nothing, reported as "the corpus does not cover this" — a confident negative
 # produced by a typo.
 CONTENT_TYPES = ("text", "table", "table_summary", "figure", "formula")
+
+# resolve_trial. The index is created by trial_graph/setup_neo4j.py over
+# Trial(nctId, briefTitle, officialTitle, acronym), Disease(name) and others.
+NAME_INDEX = "trial_entity_names"
+# How many index hits feed the query. A fulltext query without a limit returns
+# EVERY node that shares one token with the name — "trial" is in most titles.
+NAME_POOL = 50
+RESOLVE_LIMIT = 8         # trials returned; more than this is "too vague"
+# A candidate scoring under this fraction of the best one is dropped. The best
+# match is the name itself; a trial far below it shares one common word with
+# the question ("trial", "study", "1"). Measured on the real graph: the right
+# trial led every real name, and the noise sat in a long tail beneath it.
+RELATIVE_FLOOR = 0.5
 
 _openai = None
 _index = None
@@ -158,7 +204,92 @@ def _fetch(ids: list[str]) -> dict:
     return found
 
 
-# ── tool 1: semantic_search ─────────────────────────────────────────────
+# ── tool 1: resolve_trial ───────────────────────────────────────────────
+
+# One index-driven query. Every node it touches is reached from an index hit,
+# so its cost follows the number of hits (at most NAME_POOL), not the number
+# of trials in the graph.
+#
+#   index hit is a Trial    -> that trial                (name, NCT, acronym)
+#   index hit is a Disease  -> every trial that TARGETS it ("the glaucoma trial")
+#   either way              -> the Document ABOUT it, if a protocol was ingested
+_RESOLVE = """
+CALL db.index.fulltext.queryNodes($index, $search, {limit: $pool})
+YIELD node, score
+WHERE node:Trial OR node:Disease
+OPTIONAL MATCH (node)<-[:TARGETS]-(via:Trial)
+WITH CASE WHEN node:Trial THEN node ELSE via END AS t, score,
+     CASE WHEN node:Disease THEN node.name END AS condition
+WHERE t IS NOT NULL
+OPTIONAL MATCH (d:Document)-[:ABOUT]->(t)
+WITH t, d, max(score) AS score, collect(DISTINCT condition) AS matched_conditions
+RETURN t.nctId AS nct_id, t.acronym AS acronym, t.briefTitle AS title,
+       d.docId AS doc_id, score, matched_conditions
+ORDER BY score DESC
+LIMIT $limit
+"""
+
+
+def _escape_lucene(text: str) -> str:
+    """The analyst's words as literal search terms.
+
+    Lower-cased first: Lucene reads upper-case AND / OR / NOT as operators,
+    so "atezolizumab AND bevacizumab" would change the query's logic. The
+    index analyzer lower-cases anyway, so nothing is lost. Then every
+    Lucene special character is escaped — unescaped, "Phase 2/3" is a
+    syntax error, not a weak match. Same rule as trial_graph's handler.
+    """
+    special = '+-&|!(){}[]^"~*?:\\/'
+    return "".join(f"\\{c}" if c in special else c for c in text.lower())
+
+
+def resolve_trial(args: dict) -> dict:
+    """A trial's name, as the analyst wrote it -> candidate trials with doc_ids.
+
+    STEP 1  escape the name into a fulltext query. Filler words ("the",
+            "a", "that") are removed by the index's english analyzer, which
+            queryNodes applies to the query too — not by a list here
+    STEP 2  one indexed query: trials matched by name, or through a condition
+    STEP 3  drop the tail: candidates under RELATIVE_FLOOR x the best score
+    STEP 4  shape candidates; a trial with no protocol keeps doc_id None,
+            so the agent can say "no protocol for this trial" instead of
+            searching the whole corpus for it
+    """
+    name = str(args.get("name", "")).strip()
+    search = _escape_lucene(name)
+    if not search.strip():
+        return {"error": True, "detail": "name is empty — pass the trial's name, "
+                                         "NCT number, acronym, drug or condition."}
+
+    try:
+        with _get_driver().session() as session:
+            rows = [dict(r) for r in session.run(_RESOLVE, parameters={
+                "index": NAME_INDEX, "search": search,
+                "pool": NAME_POOL, "limit": RESOLVE_LIMIT})]
+    except Exception as exc:                       # the driver raises many classes
+        detail = str(exc)[:300]
+        if NAME_INDEX in detail or "fulltext" in detail.lower():
+            detail += (f" — the {NAME_INDEX!r} index is created by "
+                       "trial_graph/setup_neo4j.py; run it once.")
+        return {"error": True, "detail": detail}
+
+    best = max((float(r.get("score") or 0.0) for r in rows), default=0.0)
+    kept = [r for r in rows if float(r.get("score") or 0.0) >= RELATIVE_FLOOR * best]
+
+    candidates = [{
+        "nct_id": r["nct_id"],
+        "acronym": r.get("acronym") or "",
+        "title": normalize(r.get("title") or ""),
+        "doc_id": r.get("doc_id"),
+        "matched_conditions": [c for c in (r.get("matched_conditions") or []) if c],
+        "score": round(float(r.get("score") or 0.0), 3),
+    } for r in kept if r.get("nct_id")]
+    return {"name": name, "candidates": candidates,
+            "dropped_weak": len(rows) - len(kept),
+            "truncated": len(rows) >= RESOLVE_LIMIT}
+
+
+# ── tool 2: semantic_search ─────────────────────────────────────────────
 
 def semantic_search(args: dict) -> dict:
     """Recall a wide pool by vector similarity, then keep the top_k that
@@ -193,7 +324,7 @@ def semantic_search(args: dict) -> dict:
     return {**ranked, "candidates": len(candidates)}
 
 
-# ── tool 2: expand_neighbors (Case A) ───────────────────────────────────
+# ── tool 3: expand_neighbors (Case A) ───────────────────────────────────
 
 # Path length cannot be a Cypher parameter; it is interpolated only after
 # being forced to a bounded int — never a caller's string.
@@ -249,7 +380,7 @@ def expand_neighbors(args: dict) -> dict:
             "seed_position": seed_position, "window": window}
 
 
-# ── tool 3: expand_table (Case C) ───────────────────────────────────────
+# ── tool 4: expand_table (Case C) ───────────────────────────────────────
 
 def expand_table(args: dict) -> dict:
     chunk_id = args["chunk_id"]
@@ -296,7 +427,8 @@ def expand_table(args: dict) -> dict:
 
 # ── dispatch ────────────────────────────────────────────────────────────
 
-_TOOLS = {"semantic_search": semantic_search,
+_TOOLS = {"resolve_trial": resolve_trial,
+          "semantic_search": semantic_search,
           "expand_neighbors": expand_neighbors,
           "expand_table": expand_table}
 

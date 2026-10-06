@@ -1,4 +1,4 @@
-"""AgentCore Gateway for trial_search — three MCP tools on one Lambda target.
+"""AgentCore Gateway for trial_search — four MCP tools on one Lambda target.
 
     create_gateway()          MCP server, authorizerType=AWS_IAM (SigV4).
                               The only caller is this project's own agent,
@@ -38,9 +38,20 @@ _MIDDLEWARE_OWNED = {
 
 TOOL_SCHEMA = [
     {
+        "name": "resolve_trial",
+        "description": "Find which trial, and which protocol document, a name refers "
+                       "to. Pass the name exactly as the question wrote it: an NCT "
+                       "number, an acronym, title words, a drug or a condition. "
+                       "Returns every candidate with its nct_id, title and doc_id.",
+        "inputSchema": {"type": "object", "required": ["name"], "properties": {
+            "name": {"type": "string",
+                     "description": "The trial's name as written in the question."},
+        }},
+    },
+    {
         "name": "semantic_search",
         "description": "Find passages in the trial protocol corpus by meaning. "
-                       "Always the first step.",
+                       "Scope it with doc_id when the question is about one trial.",
         "inputSchema": {"type": "object", "required": ["query"], "properties": {
             "query": {"type": "string"},
             "top_k": {"type": "integer", "description": "How many passages (max 20)."},

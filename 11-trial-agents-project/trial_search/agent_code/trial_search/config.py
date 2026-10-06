@@ -36,7 +36,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
-REQUIRED = ('openai_secret_id', 'prompt_id', 'prompt_version', 'guardrail_id', 'guardrail_version', 'gateway_url', 'max_searches_per_turn', 'max_neighbor_calls', 'max_table_calls', 'max_window', 'expansion_token_budget',)
+REQUIRED = ('openai_secret_id', 'prompt_id', 'prompt_version', 'guardrail_id', 'guardrail_version', 'gateway_url', 'max_resolve_calls', 'max_searches_per_turn', 'max_neighbor_calls', 'max_table_calls', 'max_window', 'expansion_token_budget',)
 
 
 @dataclass(frozen=True)
@@ -49,6 +49,7 @@ class Settings:
     guardrail_id: str
     guardrail_version: str
     gateway_url: str
+    max_resolve_calls: int
     max_searches_per_turn: int
     max_neighbor_calls: int
     max_table_calls: int
@@ -131,6 +132,7 @@ def load(env=os.environ, session=None) -> Settings:
     return Settings(
         region=region, openai_api_key=secret["api_key"], openai_model=secret["model"],
         system_prompt=render(template, {
+            "max_resolve_calls": params["max_resolve_calls"],
             "max_searches_per_turn": params["max_searches_per_turn"],
             "max_neighbor_calls": params["max_neighbor_calls"],
             "max_table_calls": params["max_table_calls"],
@@ -138,6 +140,7 @@ def load(env=os.environ, session=None) -> Settings:
         prompt_version=params["prompt_version"],
         guardrail_id=params["guardrail_id"], guardrail_version=params["guardrail_version"],
         gateway_url=params["gateway_url"],
+        max_resolve_calls=int(params["max_resolve_calls"]),
         max_searches_per_turn=int(params["max_searches_per_turn"]),
         max_neighbor_calls=int(params["max_neighbor_calls"]),
         max_table_calls=int(params["max_table_calls"]),

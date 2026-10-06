@@ -144,7 +144,7 @@ class Session(Workspace):
         if connection:
             log.debug(
                 "[#%04X]  _: <SESSION> %s cancellation clean-up",
-                connection.local_port,
+                connection.log_id,
                 message,
             )
             self._pool.kill_and_release(connection)
@@ -474,6 +474,10 @@ class Session(Workspace):
         Note: For auto-commit transactions (:meth:`.Session.run`), this
         will trigger a :meth:`.Result.consume` for the current result.
 
+        .. note::
+            ``metadata`` and ``timeout`` do not have any effect when connected
+            via ``http://`` or ``https://`` scheme.
+
         :param metadata:
             a dictionary with metadata.
             Specified metadata will be attached to the executing transaction
@@ -615,7 +619,7 @@ class Session(Workspace):
                 raise
 
         if errors:
-            # TODO: 7.0 - when Python 3.11+ is the minimum,
+            # TODO: 7.0 - when dropping support for Python 3.10,
             #             use exception groups
             raise errors[-1]
         else:

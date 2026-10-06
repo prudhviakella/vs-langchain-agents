@@ -11,15 +11,17 @@
   "prompt": {
     "id": "96B8CZZKBS",
     "arn": "arn:aws:bedrock:us-east-1:234360896963:prompt/96B8CZZKBS",
-    "version": "5",
+    "version": "7",
     "variables": [
       "expansion_token_budget",
       "max_neighbor_calls",
+      "max_resolve_calls",
       "max_searches_per_turn",
       "max_table_calls"
     ]
   },
   "budgets": {
+    "max_resolve_calls": 3,
     "max_searches_per_turn": 5,
     "max_neighbor_calls": 3,
     "max_table_calls": 3,

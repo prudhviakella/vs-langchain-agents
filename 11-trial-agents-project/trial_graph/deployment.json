@@ -11,7 +11,7 @@
   "prompt": {
     "id": "SIRH9RT7EV",
     "arn": "arn:aws:bedrock:us-east-1:234360896963:prompt/SIRH9RT7EV",
-    "version": "2",
+    "version": "3",
     "variables": []
   },
   "limits": {

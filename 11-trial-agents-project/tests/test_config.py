@@ -55,9 +55,10 @@ TS = "/trial-agents/trial_search"
 TS_PARAMS = {f"{TS}/{k}": v for k, v in {
     "gateway_url": "https://gw", "openai_secret_id": "trial-agents/openai",
     "prompt_id": "P1", "prompt_version": "3", "guardrail_id": "G", "guardrail_version": "2",
+    "max_resolve_calls": "3",
     "max_searches_per_turn": "5", "max_neighbor_calls": "3", "max_table_calls": "3",
     "max_window": "10", "expansion_token_budget": "6000"}.items()}
-TS_PROMPT = ("Budgets: {{max_searches_per_turn}} searches, {{max_neighbor_calls}} neighbours, "
+TS_PROMPT = ("Budgets: {{max_resolve_calls}} resolves, {{max_searches_per_turn}} searches, {{max_neighbor_calls}} neighbours, "
              "{{max_table_calls}} tables, {{expansion_token_budget}} tokens.")
 SECRET = {"api_key": "sk-real", "model": "gpt-real"}
 
@@ -70,7 +71,8 @@ def load_ts(params=TS_PARAMS, secret=SECRET, prompt=TS_PROMPT):
 def test_trial_search_loads_and_renders_budgets():
     s = load_ts()
     assert (s.max_window, s.expansion_token_budget, s.openai_model) == (10, 6000, "gpt-real")
-    assert s.system_prompt == "Budgets: 5 searches, 3 neighbours, 3 tables, 6000 tokens."
+    assert s.max_resolve_calls == 3
+    assert s.system_prompt == "Budgets: 3 resolves, 5 searches, 3 neighbours, 3 tables, 6000 tokens."
     assert s.prompt_version == "3" and s.guardrail_version == "2"
     assert "sk-real" not in repr(s), "the API key must not appear in repr()"
 

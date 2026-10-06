@@ -62,7 +62,8 @@ deploying identity needs `logs:PutResourcePolicy` and
   2  secrets                  ── trial-agents/openai, trial-graph/neo4j
   3  trial_graph   setup_neo4j.py ── the fulltext index
   │
-  4  trial_search  deploy.py  ── needs trial-graph/neo4j; registers itself
+  4  trial_search  deploy.py  ── needs trial-graph/neo4j and the index from 3;
+                                 registers itself
      secret                   ── trial-search/pinecone
   │
   5  supervisor    deploy.py  ── reads the registry; deployed LAST
@@ -157,8 +158,9 @@ Expected output:
   index 'trial_entity_names': ONLINE
 ```
 
-`find_entity_by_name` queries this index. Without it, every name lookup
-fails. Running it again is safe (`IF NOT EXISTS`).
+Both name lookups query this index: trial_graph's `find_entity_by_name`
+and trial_search's `resolve_trial`. Without it, every name lookup fails.
+Running it again is safe (`IF NOT EXISTS`).
 
 ### Step 4 — Deploy trial_search, then set its secret
 
@@ -172,6 +174,18 @@ aws secretsmanager put-secret-value --secret-id trial-search/pinecone \
 aws secretsmanager put-secret-value --secret-id trial-search/cohere \
     --secret-string '{"api_key":"...","model":"rerank-v3.5"}'
 ```
+
+Check the name lookup against the real graph (no Lambda, no agent — the
+handler's own Cypher, with your AWS credentials):
+
+```bash
+python check_resolve.py
+python check_resolve.py "IMbrave150" "the glaucoma trial"
+```
+
+No prompt lists the trials. `resolve_trial` reads a trial's NCT number,
+title and protocol `doc_id` from the graph when a question names it, so a
+protocol added to the graph and the index is findable with no prompt change.
 
 `--pinecone-index` must be the index the RAG pipeline wrote to.
 

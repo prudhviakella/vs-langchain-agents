@@ -1,4 +1,4 @@
-"""trial_search: the three Lambda tools on REAL data, and the loop's budgets.
+"""trial_search: the four Lambda tools on REAL data, and the loop's budgets.
 
 Data: dump.json (Pinecone export) and graph_dump.json (Neo4j export) from
 TRIAL_DATA_DIR. Skipped if absent.
@@ -29,6 +29,15 @@ def lam():
     prv = {b: a for a, b in nxt.items()}
     props = {p["chunkId"]: p for p in chunks.values()}
 
+    # Identity, from the same graph export: Trial, Disease, Document and the
+    # TARGETS / ABOUT edges resolve_trial's Cypher walks.
+    nodes = {n["export_id"]: n for n in graph["nodes"]}
+    trials = {i: n["properties"] for i, n in nodes.items() if n["labels"] == ["Trial"]}
+    diseases = {i: n["properties"] for i, n in nodes.items() if n["labels"] == ["Disease"]}
+    doc_of = {r["end"]: nodes[r["start"]]["properties"]["docId"]
+              for r in graph["relationships"] if r["type"] == "ABOUT"}
+    targets = [(r["start"], r["end"]) for r in graph["relationships"] if r["type"] == "TARGETS"]
+
     class Session:
         """Mirrors neo4j Session.run(query, parameters=None, **kwargs); returns
         the rows the NEXT traversal is written to return."""
@@ -36,6 +45,8 @@ def lam():
         def __exit__(self, *a): pass
 
         def run(self, query, parameters=None, **kwargs):
+            if "fulltext.queryNodes" in query:
+                return self.resolve(parameters or kwargs)
             seed = (parameters or kwargs)["id"]
             window = int(query.split("*1..")[1].split("]")[0])
             if seed not in props:
@@ -53,6 +64,33 @@ def lam():
             return sorted(rows, key=lambda r: (r["distance"], r["position"])) or [
                 {"seed_position": props[seed]["position"], "chunk_id": None,
                  "n_tokens": None, "position": None, "distance": None}]
+
+        @staticmethod
+        def resolve(params):
+            """The rows the _RESOLVE Cypher returns, computed in Python over the
+            real graph export. Scoring is token overlap — a stand-in for Lucene;
+            what is under test is the walk (Trial | Disease -> Trial -> Document)
+            and the shaping, not Lucene's ranking."""
+            assert params["index"] == "trial_entity_names" and params["pool"] >= params["limit"]
+            words = set(params["search"].replace("\\", "").split())
+            def score(*fields):
+                return len(words & set(" ".join(str(f or "") for f in fields).lower().split()))
+            best: dict = {}
+            for i, t in trials.items():
+                sc = score(t.get("nctId"), t.get("briefTitle"), t.get("officialTitle"), t.get("acronym"))
+                if sc:
+                    best.setdefault(i, [0, set()])[0] = max(best.get(i, [0])[0], sc)
+            for t_id, d_id in targets:
+                sc = score(diseases[d_id].get("name"))
+                if sc:
+                    row = best.setdefault(t_id, [0, set()])
+                    row[0] = max(row[0], sc)
+                    row[1].add(diseases[d_id]["name"])
+            rows = [{"nct_id": trials[i]["nctId"], "acronym": trials[i].get("acronym"),
+                     "title": trials[i]["briefTitle"], "doc_id": doc_of.get(i),
+                     "score": float(sc), "matched_conditions": sorted(conds)}
+                    for i, (sc, conds) in best.items()]
+            return sorted(rows, key=lambda r: -r["score"])[:params["limit"]]
 
     class V:
         def __init__(s, v): s.id, s.values, s.metadata, s.score = v["id"], v["values"], v["metadata"], .5
@@ -81,7 +119,7 @@ def lam():
     h = fakes.load_lambda("trial_search")
     h._driver = type("D", (), {"session": lambda self: Session()})()
     h._index, h._openai = Index(), Embed
-    h.pine, h.props, h.nxt, h.prv = pine, props, nxt, prv
+    h.pine, h.props, h.nxt, h.prv, h.trials = pine, props, nxt, prv, trials
     return h
 
 
@@ -133,6 +171,11 @@ class S(BaseModel):
     doc_id: str | None = None
 
 
+class R(BaseModel):
+    """Mirrors the Gateway's resolve_trial inputSchema."""
+    name: str
+
+
 class E(BaseModel):
     chunk_id: str
     window: int = 2
@@ -144,7 +187,8 @@ def run_loop(lam, script, **overrides):
     from trial_search import core, guardrail
     guardrail._client = GuardrailClient()
     sent = []
-    tools = [mcp_tool(P, "semantic_search", lam.lambda_handler, S, sent),
+    tools = [mcp_tool(P, "resolve_trial", lam.lambda_handler, R, sent),
+             mcp_tool(P, "semantic_search", lam.lambda_handler, S, sent),
              mcp_tool(P, "expand_neighbors", lam.lambda_handler, E, sent),
              mcp_tool(P, "expand_table", lam.lambda_handler, E, sent)]
     s = fakes.settings_for("trial_search", **overrides)
@@ -226,3 +270,104 @@ def test_search_fixture_matches_the_gateway_schema():
     gateway = infra("trial_search", "gateway")
     search = next(t for t in gateway.TOOL_SCHEMA if t["name"] == "semantic_search")
     assert set(S.model_fields) == set(search["inputSchema"]["properties"])
+
+
+# ── resolve_trial: identity from the graph, not from the prompt ──────────
+
+def test_resolve_by_acronym_found_only_in_the_registry(lam):
+    """An acronym that appears nowhere in its protocol's text is still found:
+    resolve_trial reads the registry graph, so it returns the doc_id that
+    scopes the search."""
+    acronym_trial = next(t for t in lam.trials.values() if t.get("acronym"))
+    r = lam.resolve_trial({"name": acronym_trial["acronym"]})
+    top = r["candidates"][0]
+    assert top["nct_id"] == acronym_trial["nctId"]
+    assert top["doc_id"] and top["doc_id"].startswith(acronym_trial["nctId"].lower())
+
+
+def test_resolve_by_condition_walks_targets(lam):
+    r = lam.resolve_trial({"name": "glaucoma"})
+    top = r["candidates"][0]
+    assert top["doc_id"] == "nct02014597-glaucoma-optokinetic"
+    assert "Glaucoma" in top["matched_conditions"]
+
+
+def test_resolve_returns_every_candidate_for_a_shared_name(lam):
+    """'COVID-19 vaccine' fits several trials. All come back; none is picked."""
+    r = lam.resolve_trial({"name": "COVID-19 vaccine"})
+    assert len({c["nct_id"] for c in r["candidates"]}) >= 3
+
+
+def test_resolve_escapes_lucene_syntax(lam):
+    """Upper-case AND is a Lucene operator and '/' a syntax error. Both must
+    reach the index as literal, lower-cased text."""
+    assert lam._escape_lucene("Phase 2/3 AND (x)") == "phase 2\\/3 and \\(x\\)"
+    assert lam.resolve_trial({"name": "  "})["error"]
+
+
+def test_resolve_then_scoped_search_gives_entities_from_the_graph(lam):
+    """The whole point: the model never writes a doc_id or an NCT number from
+    memory. The doc_id comes from resolve_trial, and the final entities are
+    computed from resolved trials x passage documents — the model's own
+    entities ('d') are ignored once the graph has answered."""
+    doc = "nct02014597-glaucoma-optokinetic"
+    result, response, sent = run_loop(lam, [
+        call(P + "resolve_trial", name="glaucoma"),
+        call(P + "semantic_search", query="inclusion criteria", doc_id=doc),
+        DECIDE])
+    assert [n for n, _ in sent] == ["resolve_trial", "semantic_search"]
+    assert result["resolve_calls"] == 1 and response.stats.resolve_calls == 1
+    assert response.resolved[0].doc_id == doc
+    assert response.entities == ["NCT02014597"]
+    assert {p.doc_id for p in response.passages} == {doc}
+
+
+def test_resolve_budget_is_enforced(lam):
+    _, response, sent = run_loop(lam, [
+        call(P + "resolve_trial", name="glaucoma"),
+        call(P + "resolve_trial", name="covid"),
+        call(P + "resolve_trial", name="semaglutide"),
+        call(P + "resolve_trial", name="obesity"),          # 4th: over the limit of 3
+        call(P + "semantic_search", query="q"),
+        DECIDE])
+    assert [n for n, _ in sent].count("resolve_trial") == 3
+    assert response.stats.resolve_calls == 3
+
+
+def test_trial_without_a_protocol_is_unanswerable_without_searching(lam):
+    """doc_id None means the registry knows the trial but no protocol was
+    ingested. The model stops; that is an answer, not a hollow decision."""
+    _, response, _ = run_loop(lam, [
+        call(P + "resolve_trial", name="glaucoma"),
+        call("ModelDecision", entities=[], answerable=False, note="no protocol in the corpus")])
+    assert response.result_shape == "unanswerable"
+
+
+def test_resolve_fixture_matches_the_gateway_schema():
+    from test_payloads import infra
+    gateway = infra("trial_search", "gateway")
+    resolve = next(t for t in gateway.TOOL_SCHEMA if t["name"] == "resolve_trial")
+    assert set(R.model_fields) == set(resolve["inputSchema"]["properties"])
+
+
+def test_no_trial_catalogue_in_the_prompt():
+    """The prompt describes HOW to find a trial, never WHICH trials exist. A
+    doc_id or NCT number written into it is data that goes stale."""
+    import re
+    text = (fakes.ROOT / "trial_search" / "prompts" / "system.md").read_text()
+    assert not re.search(r"NCT\d{8}", text), "an NCT number is hard-coded in the prompt"
+    assert not re.search(r"\bnct\d{8}-", text), "a doc_id is hard-coded in the prompt"
+
+
+def test_weak_tail_is_dropped(lam, monkeypatch):
+    """A candidate far below the best match shares only a common word with the
+    name. It is dropped, and the drop is counted, not hidden."""
+    rows = [{"nct_id": "NCT1", "title": "a", "doc_id": "d1", "score": 3.0},
+            {"nct_id": "NCT2", "title": "b", "doc_id": "d2", "score": 2.0},
+            {"nct_id": "NCT3", "title": "c", "doc_id": "d3", "score": 1.0}]
+    session = type("S", (), {"__enter__": lambda s: s, "__exit__": lambda s, *a: None,
+                             "run": lambda s, q, parameters=None, **k: rows})()
+    monkeypatch.setattr(lam, "_driver", type("D", (), {"session": lambda self: session})())
+    r = lam.resolve_trial({"name": "x"})
+    assert [c["nct_id"] for c in r["candidates"]] == ["NCT1", "NCT2"]
+    assert r["dropped_weak"] == 1

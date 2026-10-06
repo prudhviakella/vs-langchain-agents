@@ -8,7 +8,7 @@
     },
     "trial_search": {
       "arn": "arn:aws:bedrock-agentcore:us-east-1:234360896963:runtime/trial_search-3kibQFE3Ag",
-      "description": "What the 20 trial protocols actually say: eligibility wording, study design, endpoint definitions, dosing, safety and adverse event sections, and the values inside protocol tables. Answers by retrieving passages. Knows each protocol by NCT number, acronym (IMbrave150, STEP 1, PIONEER 4, ENSEMBLE 2 ...) and drug and condition, and narrows to it itself. Does not know sponsors, sites or other registry facts."
+      "description": "What the trial protocols actually say: eligibility wording, study design, endpoint definitions, dosing, safety and adverse event sections, and the values inside protocol tables. Answers by retrieving passages. Resolves a trial named in the question \u2014 NCT number, acronym, title words, drug or condition \u2014 to its protocol itself, through the registry graph's name index. Does not answer sponsor, site, phase or other registry questions."
     }
   },
   "guardrail": {
@@ -20,7 +20,7 @@
     "system": {
       "id": "QHPW1MAULF",
       "arn": "arn:aws:bedrock:us-east-1:234360896963:prompt/QHPW1MAULF",
-      "version": "4",
+      "version": "5",
       "variables": [
         "available_agents",
         "max_agent_calls_per_turn"

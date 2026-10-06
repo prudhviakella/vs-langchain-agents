@@ -7,7 +7,7 @@
                           trial-agents/openai (placeholders if new);
                           trial-graph/neo4j must exist — owned by trial_graph
     STEP 2   Lambda role  read those four secrets
-    STEP 3   Lambda       semantic_search, expand_neighbors, expand_table
+    STEP 3   Lambda       resolve_trial, semantic_search, expand_neighbors, expand_table
     STEP 4   Gateway      AWS_IAM (SigV4); target created or updated
     STEP 5   guardrail    shared; a new version only if the policy changed
     STEP 6   prompt       prompts/system.md -> Prompt Management; version only on change
@@ -29,6 +29,9 @@ Before STEP 1, CloudWatch Transaction Search is enabled if it is not already —
 without it, no agent's spans appear in CloudWatch (infra/observability.py).
 
 DEPLOY ORDER:  trial_graph -> trial_search -> supervisor
+
+resolve_trial reads the Neo4j fulltext index trial_entity_names. It is created
+by trial_graph/setup_neo4j.py — run that once before this deploy.
 """
 import argparse
 import json
@@ -47,13 +50,17 @@ PINECONE_SECRET = "trial-search/pinecone"
 COHERE_SECRET = "trial-search/cohere"
 RERANK_POOL = 40
 NEO4J_SECRET = "trial-graph/neo4j"          # owned by trial_graph
-DESCRIPTION = ("What the 20 trial protocols actually say: eligibility wording, study "
+# Read by the supervisor's routing model (rendered into its AVAILABLE AGENTS).
+# It describes a capability, not the corpus: no trial names or counts, so it
+# never goes stale when protocols are added.
+DESCRIPTION = ("What the trial protocols actually say: eligibility wording, study "
                "design, endpoint definitions, dosing, safety and adverse event sections, "
                "and the values inside protocol tables. Answers by retrieving passages. "
-               "Knows each protocol by NCT number, acronym (IMbrave150, STEP 1, "
-               "PIONEER 4, ENSEMBLE 2 ...) and drug and condition, and narrows to it "
-               "itself. Does not know sponsors, sites or other registry facts.")
-BUDGETS = {"max_searches_per_turn": 5, "max_neighbor_calls": 3, "max_table_calls": 3,
+               "Resolves a trial named in the question — NCT number, acronym, title "
+               "words, drug or condition — to its protocol itself, through the "
+               "registry graph's name index. Does not answer sponsor, site, phase or "
+               "other registry questions.")
+BUDGETS = {"max_resolve_calls": 3, "max_searches_per_turn": 5, "max_neighbor_calls": 3, "max_table_calls": 3,
            "max_window": 10, "expansion_token_budget": 6000}
 
 
