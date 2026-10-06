@@ -131,7 +131,12 @@ def test_query_path_end_to_end():
     assert types[0] == "status" and types[-1] == "final" and "token" in types
     assert "grounding" in nlq_phases and "executing" in nlq_phases                 # NLQ's progress, relayed live
     assert "Plan: Count shipments by carrier." in reasoning and "SELECT carrier, COUNT(*)" in reasoning
-    assert "→ 5 rows" in reasoning and "Chart: bar — USPS ships the most" in reasoning
+    assert "Asked the data agent: \u201cShipments per carrier\u201d" in reasoning
+    assert "Schema: ecom.shipments" in reasoning and "Query 1:" in reasoning
+    assert "\u21b3 5 rows \u00d7 2 columns (carrier, shipments) in " in reasoning
+    assert "Data agent done in " in reasoning and "note: counts all shipments" in reasoning
+    assert "Chart: bar, 1 figure (" in reasoning and "USPS ships the most" in reasoning
+    assert "Writing the answer from 5 rows of evidence" in reasoning
     f = events[-1]
     assert f["text"] == "**USPS** ships the most: 8,051 shipments." and f["kind"] == "answer"
     assert f["artifacts"]["table"]["columns"] == ["carrier", "shipments"] and len(f["artifacts"]["table"]["rows"]) == 5
@@ -190,3 +195,16 @@ def test_supervisor_a2a_wire(monkeypatch):
     kinds = [e.get("type") for e in envs]
     assert {"status", "reasoning", "token", "final"} <= set(kinds) and kinds[-1] == "final"
     assert frames[-1]["result"]["status"]["state"] == "completed"
+
+
+def test_a_failed_attempt_is_visible_in_reasoning():
+    """NLQ's first query fails; the reasoning shows both queries and the exact error between them."""
+    SCRIPT["nlq"] = [call("execute_sql", sql="SELECT carrier, COUNT(*) AS n FROM ecom.shipments GROUP BY revenue"),
+                     call("execute_sql", sql=CARRIER_SQL), decide()]
+    SCRIPT["chart"] = ChartDecision(chart_type="none", insight="", figures=[])
+    reasoning = "".join(e["text"] for e in run(RouteDecision(action="query", questions=["Shipments per carrier"],
+                                                             rationale="r"), Compose(["ok"])) if e["type"] == "reasoning")
+    assert "Query 1:" in reasoning and "Query 2:" in reasoning
+    assert "\u21b3 query 1 failed: column \"revenue\" does not exist — rewriting" in reasoning
+    assert reasoning.index("Query 1:") < reasoning.index("failed") < reasoning.index("Query 2:")
+    assert "No chart: the chart agent judged that a chart adds nothing here" in reasoning

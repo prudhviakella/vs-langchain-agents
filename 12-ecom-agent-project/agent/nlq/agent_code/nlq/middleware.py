@@ -64,7 +64,8 @@ class GroundingMiddleware(AgentMiddleware):
         question = next((m.content for m in reversed(state["messages"]) if getattr(m, "type", "") == "human"), "")
         P.emit(P.GROUNDING, detail="finding the tables and columns this question needs")
         g = await asyncio.to_thread(G.retrieve, str(question))
-        P.emit(P.GROUNDING, detail=f"schema ready: {', '.join(g.tables) or 'no tables matched'}")
+        P.emit(P.GROUNDING, detail=f"schema ready: {', '.join(g.tables) or 'no tables matched'}",
+               tables=g.tables, terms=g.terms, joins=g.joins, examples=g.examples)
         return {"grounding_context": g.context_block, "grounding_ids": g.record_ids}
 
     async def awrap_model_call(self, request, handler):
@@ -87,6 +88,7 @@ class GuardMiddleware(AgentMiddleware):
             # an outer LIMIT, add none of its own, and report a capped result as complete.
             checked = guard(request.tool_call["args"].get("sql", ""), CFG.row_cap + 1)
         except GuardError as exc:
+            P.emit(P.ERROR, sql=request.tool_call["args"].get("sql", ""), detail=f"refused by the SQL guard: {exc}")
             return _message(request, f"GUARD: {exc}")
         request.tool_call["args"]["sql"] = checked.sql          # the tool runs what was checked
         return await handler(request)

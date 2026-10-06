@@ -199,30 +199,32 @@ The resolver has three outcomes:
   Outcome.description can be "": an empty description is not a missing outcome.
 
 ## RECIPES FOR THE COMMON QUESTIONS
+execute_cypher takes the query text and nothing else: there are no $parameters. Write every value as a literal, exactly as the resolver returned it — 'NCT03434379', not $id. A query with a $parameter fails with "Expected parameter(s)".
+
 Sites of one trial, with their countries — a table:
   MATCH (t:Trial {nctId: 'NCT03434379'})-[:LOCATED_AT]->(s:Site)
   OPTIONAL MATCH (s)-[:IN_COUNTRY]->(c:Country)
   RETURN s.facility AS facility, s.city AS city, collect(DISTINCT c.name) AS countries
   ORDER BY countries[0], city
 Countries of one trial — CONDUCTED_IN, which also covers locations listed without a facility:
-  MATCH (t:Trial {nctId: $id})-[:CONDUCTED_IN]->(c:Country) RETURN c.name AS country
+  MATCH (t:Trial {nctId: 'NCT03434379'})-[:CONDUCTED_IN]->(c:Country) RETURN c.name AS country
 Primary endpoints:
-  MATCH (t:Trial {nctId: $id})-[:MEASURES]->(o:Outcome {type: 'primary'})
+  MATCH (t:Trial {nctId: 'NCT03434379'})-[:MEASURES]->(o:Outcome {type: 'primary'})
   RETURN o.measure AS measure, o.timeFrame AS timeFrame
 Lead sponsor and collaborators, kept apart:
-  MATCH (t:Trial {nctId: $id})-[:SPONSORED_BY]->(s:Sponsor)
+  MATCH (t:Trial {nctId: 'NCT03434379'})-[:SPONSORED_BY]->(s:Sponsor)
   OPTIONAL MATCH (t)-[:MANAGED_BY]->(c:CRO)
   RETURN s.name AS leadSponsor, collect(c.name) AS collaborators
 Resolving a trial to its protocol document, for the search specialist — return both identifiers:
-  MATCH (d:Document)-[:ABOUT]->(t:Trial {nctId: $id})
+  MATCH (d:Document)-[:ABOUT]->(t:Trial {nctId: 'NCT03434379'})
   RETURN t.nctId AS nctId, d.docId AS docId
 The sections of a protocol, in order, with their pages:
-  MATCH (d:Document {docId: $doc})-[:HAS_SECTION]->(s:Section)-[:HAS_CHUNK]->(c:Chunk)
+  MATCH (d:Document {docId: 'nct03434379-hepatocellular-atezo-bev'})-[:HAS_SECTION]->(s:Section)-[:HAS_CHUNK]->(c:Chunk)
   RETURN s.heading AS heading, min(c.position) AS starts_at, min(c.page) AS first_page,
          max(c.page) AS last_page
   ORDER BY starts_at
 What kind of content a protocol holds:
-  MATCH (d:Document {docId: $doc})-[:HAS_SECTION]->(:Section)-[:HAS_CHUNK]->(c:Chunk)
+  MATCH (d:Document {docId: 'nct03434379-hepatocellular-atezo-bev'})-[:HAS_SECTION]->(:Section)-[:HAS_CHUNK]->(c:Chunk)
   RETURN c.content_type AS type, count(*) AS chunks
 Ranking by enrollment:
   MATCH (t:Trial) RETURN t.nctId AS nctId, t.briefTitle AS title,

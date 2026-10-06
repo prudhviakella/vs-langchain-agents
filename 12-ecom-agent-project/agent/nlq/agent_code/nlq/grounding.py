@@ -38,6 +38,10 @@ class Grounding:
     context_block: str
     record_ids: list[str] = field(default_factory=list)
     tables: list[str] = field(default_factory=list)
+    # what the Reasoning panel shows: the business terms, joins and solved examples in the prompt
+    terms: list[str] = field(default_factory=list)
+    joins: list[str] = field(default_factory=list)
+    examples: list[str] = field(default_factory=list)
 
 
 def _s(v, cap: int = 0) -> str:
@@ -169,4 +173,7 @@ def assemble(tables, columns, joins, examples, glossary, rules) -> Grounding:
             ids.append(e.get("id", ""))
             lines.append(f"  Q: {_s(e.get('question'))}\n  SQL:\n{e.get('query', '').strip()}\n")
 
-    return Grounding(context_block="\n".join(lines), record_ids=[i for i in ids if i], tables=names)
+    return Grounding(context_block="\n".join(lines), record_ids=[i for i in ids if i], tables=names,
+                     terms=[_s(g.get("term")) for g in glossary if _s(g.get("term"))],
+                     joins=[f"{_s(j.get('left_table'))} ⋈ {_s(j.get('right_table'))} on {_s(j.get('join_on'))}" for j in rel],
+                     examples=[_s(e.get("question")) for e in examples if _s(e.get("question"))])

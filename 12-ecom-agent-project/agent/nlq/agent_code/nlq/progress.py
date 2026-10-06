@@ -12,8 +12,10 @@ WHAT THIS DOES NOT DO
 """
 from __future__ import annotations
 
-GROUNDING, LOOKUP, VALIDATING, EXECUTING, RESULT, DONE = (
-    "grounding", "lookup", "validating", "executing", "result", "done")
+GROUNDING, LOOKUP, VALIDATING, VALIDATED, EXECUTING, ERROR, RESULT, DONE = (
+    "grounding", "lookup", "validating", "validated", "executing", "error", "result", "done")
+# ERROR: a query the model must rewrite (SQL error or guard rejection) — the supervisor shows it,
+# so a reader sees the failed attempt and why, not only the query that finally worked.
 
 
 def emit(phase: str, **fields) -> None:

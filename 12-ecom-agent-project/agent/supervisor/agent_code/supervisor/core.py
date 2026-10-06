@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 import uuid
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -97,6 +98,44 @@ def _source(q: str, r: dict) -> dict | None:
             "query": sql, "question": q, "row_count": r.get("row_count"), "sources": tables, "filters": []}
 
 
+def _nlq_line(ev: dict, attempt: dict) -> str | None:
+    """One NLQ progress event -> one reasoning line (None for events that only drive the status line).
+
+        grounding (with tables)  Schema: tables · business terms · joins · similar solved examples
+        executing                Query n: the SQL, as a ```sql block
+        error                    ↳ query n failed: <the error> — rewriting
+        validated                ↳ plan check: <valid / invalid — why>
+        result                   ↳ rows × columns (names) in ms, capped or not
+        lookup                   Looked up '<term>' in the schema
+    """
+    phase = ev.get("phase")
+    if phase == "grounding" and ev.get("tables"):
+        parts = [f"Schema: {', '.join(ev['tables'])}"]
+        if ev.get("terms"):
+            parts.append(f"business terms: {', '.join(ev['terms'])}")
+        if ev.get("joins"):
+            parts.append(f"joins: {'; '.join(ev['joins'])}")
+        if ev.get("examples"):
+            parts.append("similar solved examples: " + "; ".join(f"\u201c{x}\u201d" for x in ev["examples"][:3]))
+        return "\n".join(parts[:1] + [f"  {p}" for p in parts[1:]])
+    if phase == "executing" and ev.get("sql"):
+        attempt["n"] += 1
+        return f"Query {attempt['n']}:\n```sql\n{ev['sql'].strip()}\n```"
+    if phase == "error":
+        return f"  \u21b3 query {max(attempt['n'], 1)} failed: {ev.get('detail', 'error')} — rewriting"
+    if phase == "validated":
+        return f"  \u21b3 plan check: {ev.get('detail', '')}"
+    if phase == "result":
+        cols = ev.get("columns") or []
+        shown = ", ".join(cols[:8]) + (f", +{len(cols) - 8} more" if len(cols) > 8 else "")
+        return (f"  \u21b3 {int(ev.get('rows') or 0):,} rows \u00d7 {len(cols)} columns ({shown})"
+                + (f" in {ev['elapsed_ms']} ms" if ev.get("elapsed_ms") is not None else "")
+                + (" — capped, more rows exist" if ev.get("truncated") else ""))
+    if phase == "lookup":
+        return f"Looked up {ev.get('detail', 'a term')} in the schema"
+    return None
+
+
 def _evidence(i: int, q: str, r: dict) -> str:
     if "error" in r:
         return f"### Evidence {i}: {q}\nERROR: {r['error']}"
@@ -157,11 +196,14 @@ async def orchestrate(question: str, history: list[dict] | None = None, conversa
         yield final(decision.reply, ["supervisor"])
         return
 
-    # STEP 2 — NLQ, one call per sub-question, progress relayed live
+    # STEP 2 — NLQ, one call per sub-question; every step it takes becomes a reasoning line
     results: list[tuple[str, dict]] = []
     for q in decision.questions[:CFG.max_nlq_calls]:
         yield {"type": "status", "agent": "nlq", "phase": "invoking", "detail": q}
+        yield reason(f"Asked the data agent: \u201c{q}\u201d")
         events: list[dict] = []
+        attempt = {"n": 0}
+        t0 = time.monotonic()
         try:
             fut = asyncio.ensure_future(
                 specialists.call("nlq", {"question": q, "history": []}, events.append, conversation_id))
@@ -170,17 +212,22 @@ async def orchestrate(question: str, history: list[dict] | None = None, conversa
                     ev = events.pop(0)
                     yield {"type": "status", "agent": "nlq", "phase": ev.get("phase", "working"),
                            **({"detail": ev["detail"]} if ev.get("detail") else {})}
-                    if ev.get("sql"):
-                        yield reason(f"SQL (nlq):\n```sql\n{ev['sql'].strip()}\n```")
+                    line = _nlq_line(ev, attempt)
+                    if line:
+                        yield reason(line)
                 if not fut.done():
                     await asyncio.sleep(0.05)
             r = fut.result()
             usage_by_agent["nlq"] = _add(usage_by_agent.get("nlq", {}), (r.get("usage") or {}))
-            yield reason(f"→ {r.get('row_count', 0):,} rows" + (" (capped)" if r.get("truncated") else "")
-                         + (f" — {r['result_note']}" if r.get("result_note") else ""))
+            took = f"{time.monotonic() - t0:.1f} s"
+            if r.get("result_shape") == "unanswerable":
+                yield reason(f"The data agent could not answer from this data ({took}): {r.get('result_note', '')}")
+            else:
+                yield reason(f"Data agent done in {took}" + (f" — note: {r['result_note']}" if r.get("result_note") else "")
+                             + (f" — not covered: {'; '.join(r['unmet_parts'])}" if r.get("unmet_parts") else ""))
         except specialists.SpecialistError as exc:
             r = {"error": str(exc)}
-            yield reason(f"The data agent failed: {exc}")
+            yield reason(f"The data agent failed after {time.monotonic() - t0:.1f} s: {exc}")
         results.append((q, r))
 
     tables = [r for _, r in results if r.get("rows")]
@@ -196,22 +243,35 @@ async def orchestrate(question: str, history: list[dict] | None = None, conversa
     agents = ["supervisor", "nlq"]
     if tables and len(tables[0]["rows"]) >= CFG.chart_min_rows and len(tables[0]["columns"]) >= 2:
         yield {"type": "status", "agent": "chart_gen", "phase": "charting"}
+        t0 = time.monotonic()
         try:
             chart = await specialists.call("chart_gen", {"question": question, "columns": tables[0]["columns"],
                                                          "rows": tables[0]["rows"], "note": tables[0].get("result_note", "")},
                                            lambda ev: None, conversation_id)
             usage_by_agent["chart_gen"] = chart.pop("usage", {}) or {}
             agents.append("chart_gen")
+            took = f"{time.monotonic() - t0:.1f} s"
             if chart.get("figures"):
                 base["artifacts"]["charts"].append(chart)
-                yield reason(f"Chart: {chart['chart_type']} — {chart.get('insight', '')}")
+                n = len(chart["figures"])
+                yield reason(f"Chart: {chart['chart_type']}, {n} figure{'s' if n > 1 else ''} ({took}) — {chart.get('insight', '')}")
             elif chart.get("error"):
-                yield reason(f"No chart: {chart['error']}")
+                yield reason(f"No chart ({took}): {chart['error']}")
+            else:
+                yield reason(f"No chart: the chart agent judged that a chart adds nothing here ({took}) — "
+                             f"{chart.get('insight', '')}".rstrip(" —"))
         except specialists.SpecialistError as exc:
             yield reason(f"No chart: {exc}")
+    elif tables:
+        yield reason(f"No chart: {len(tables[0]['rows'])} row(s) read better as text")
 
     # STEP 4 — compose, streamed
     yield {"type": "status", "agent": "supervisor", "phase": "composing"}
+    rows = sum(len(r.get("rows") or []) for _, r in results)
+    failed = sum("error" in r for _, r in results)
+    yield reason(f"Writing the answer from {rows:,} row{'s' if rows != 1 else ''} of evidence"
+                 + (f" ({failed} part{'s' if failed > 1 else ''} failed — said so in the answer)" if failed else "")
+                 + "; numbers are copied from the rows, not recomputed.")
     evidence = "\n\n".join(_evidence(i + 1, q, r) for i, (q, r) in enumerate(results))
     parts: list[str] = []
     comp_usage: dict = {}

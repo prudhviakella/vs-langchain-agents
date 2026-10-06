@@ -1,701 +1,145 @@
 """Output contract for the Trial Graph agent.
 
-Trial Graph is a DATA PRODUCER.
+Adapted from ACT Xerebro's NLC schemas.py — GraphNode, GraphRelationship,
+TokenUsage, and collect_usage are unchanged, since none of them reference
+anything fraud-graph-specific. Only ModelDecision and the final response
+model are adapted to this domain.
 
-It does not own the final user-facing answer.
+Trial Graph is a pure DATA PRODUCER, same as NLC: it returns graph-shaped
+data based on the Cypher it wrote, plus a result_shape hint the Supervisor
+uses for routing. It does NOT write a summary — the Supervisor owns that.
 
-Its responsibility is:
-
-    Natural-language question
-             │
-             ▼
-        Cypher query
-             │
-             ▼
-           Neo4j
-             │
-             ▼
-    Structured graph/table data
-             │
-             ▼
-    TrialGraphResponse
-             │
-             ▼
-        Supervisor
-
-
-IMPORTANT DESIGN PRINCIPLE
---------------------------
-
-The LLM does NOT generate the bulk result.
-
-The LLM only produces a small ModelDecision:
-
-    ModelDecision
-        ├── entities
-        ├── answerable
-        └── note
-
-The actual Cypher that was executed is captured by the tool/middleware.
-
-The actual Neo4j result is captured server-side.
-
-The final TrialGraphResponse is assembled programmatically.
-
-Therefore:
-
-    LLM
-      │
-      ├── decides whether the result is answerable
-      ├── identifies relevant entities
-      └── provides a factual note
-             │
-             ▼
-    Program code
-      │
-      ├── executed Cypher
-      ├── graph nodes
-      ├── relationships
-      ├── table rows
-      └── token usage
-             │
-             ▼
-    TrialGraphResponse
-
-
-WHY THE LLM DOES NOT RETRANSMIT THE DATA
-----------------------------------------
-
-Suppose Neo4j returns:
-
-    100 rows
-    20 graph nodes
-    25 relationships
-
-We do NOT ask the LLM to reproduce those values.
-
-Instead:
-
-    Neo4j
-       │
-       ▼
-    execute_cypher
-       │
-       ▼
-    server-side state
-       │
-       ▼
-    TrialGraphResponse
-
-This prevents the model from accidentally changing or hallucinating
-retrieved values.
-
-It is especially important because the result may be used by the
-Supervisor for a later step.
-
-
-WHO OWNS THE FINAL ANSWER
--------------------------
-
-Trial Graph:
-    Retrieves and structures evidence.
-
-Supervisor:
-    Decides how to use that evidence and generates the user-facing answer.
-
-Therefore Trial Graph deliberately does NOT have a "summary" field
-containing a natural-language answer.
+Bulk data (nodes/relationships) is captured server-side by the execute
+tool and assembled here programmatically; the LLM never re-transcribes it.
+Same principle as NLC, same reason: a model that retypes a result can
+retype it wrong, and a wrong retype compounds if it feeds a follow-up
+query.
 """
-
 from __future__ import annotations
 
 from typing import Any, Literal
-
 from pydantic import BaseModel, Field
 
 
 class GraphNode(BaseModel):
-    """One Neo4j node returned from a graph query.
-
-    This is a programmatically captured representation of a Neo4j node.
-
-    Example:
-
-        (:Trial {
-            nctId: "NCT03434379",
-            phase: "Phase 3"
-        })
-
-    becomes approximately:
-
-        GraphNode(
-            element_id="...",
-            labels=["Trial"],
-            properties={
-                "nctId": "NCT03434379",
-                "phase": "Phase 3"
-            }
-        )
-
-    The model does NOT construct this object.
-    It is assembled from the Neo4j result.
-    """
-
-    # Neo4j's unique element identifier for the node.
-    #
-    # This allows relationships to reference the node without relying
-    # on a business property such as nctId.
     element_id: str
-
-    # Neo4j labels assigned to the node.
-    #
-    # Example:
-    #
-    #     ["Trial"]
-    #
-    # or:
-    #
-    #     ["Trial", "ClinicalStudy"]
-    labels: list[str] = Field(
-        default_factory=list
-    )
-
-    # All properties returned for this node.
-    #
-    # Any property type supported by the response serialization can
-    # be represented through Any.
-    properties: dict[str, Any] = Field(
-        default_factory=dict
-    )
+    labels: list[str] = Field(default_factory=list)
+    properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class GraphRelationship(BaseModel):
-    """One Neo4j relationship returned from a graph query.
-
-    Example Neo4j relationship:
-
-        (trial)-[:SPONSORED_BY]->(sponsor)
-
-    is represented using the element IDs of the start/end nodes.
-
-    Example:
-
-        GraphRelationship(
-            element_id="...",
-            type="SPONSORED_BY",
-            start="node-id-1",
-            end="node-id-2"
-        )
-
-    Again, this object is produced from the actual Neo4j result,
-    not generated by the LLM.
-    """
-
-    # Neo4j relationship element identifier.
     element_id: str
-
-    # Relationship type.
-
-    # Example:
-    #
-    #     SPONSORED_BY
-    #     TARGETS
-    #     CONDUCTED_IN
     type: str
-
-    # element_id of the source/start node.
-    start: str = Field(
-        description="start node element_id"
-    )
-
-    # element_id of the destination/end node.
-    end: str = Field(
-        description="end node element_id"
-    )
-
-    # Relationship properties, if any.
-    properties: dict[str, Any] = Field(
-        default_factory=dict
-    )
+    start: str = Field(description="start node element_id")
+    end: str = Field(description="end node element_id")
+    properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class ModelDecision(BaseModel):
-    """Small structured decision produced by the LLM.
-
-    This is intentionally the ONLY structured output that the LLM owns.
-
-    It contains:
-
-        entities
-        answerable
-        note
-
-    It does NOT contain:
-
-        - Cypher
-        - graph nodes
-        - relationships
-        - table rows
-        - the final user-facing answer
-
-
-    WHY?
-
-    The actual executed Cypher is recorded by execute_cypher.
-
-    The actual query result is captured by the middleware.
-
-    This makes the final response grounded in an actual database
-    execution rather than whatever values the model decides to emit.
+    """The ONLY thing the LLM emits as structured output — small, no bulk
+    data, and NO cypher. The model does not report the query: the executed
+    query is recorded by the execute_cypher tool itself and filled in
+    programmatically. This makes it structurally impossible to "answer"
+    without running the query — every field here is a judgment the model
+    can only make AFTER seeing a real result from execute_cypher.
     """
-
-    # Business entities identified or surfaced by the graph query.
-    #
-    # Examples:
-    #
-    #     NCT03434379
-    #     Roche
-    #     IMbrave150
-    #
-    # The Supervisor can use this list when presenting the result.
     entities: list[str] = Field(
         default_factory=list,
-
-        description=(
-            "Business entities the answer surfaces (ids/names) — "
-            "trials, sponsors, drugs, diseases, sites. Feeds the "
-            "entity list the analyst sees alongside the answer."
-        ),
+        description="Business entities the answer surfaces (ids/names) — "
+                    "trials, sponsors, drugs, diseases, sites. Feeds the "
+                    "entity list the analyst sees alongside the answer.",
     )
-
-    # Indicates whether the question can actually be answered using
-    # the Trial Graph schema and available graph data.
-    #
-    # IMPORTANT:
-    #
-    # True does not mean:
-    #
-    #     "The model knows the answer."
-    #
-    # It means the question is answerable using the graph.
-    #
-    # False is appropriate when the requested information isn't modeled.
     answerable: bool = Field(
         default=True,
-
-        description=(
-            "False if the question cannot be grounded in the graph "
-            "schema (e.g. asking about data this graph does not "
-            "model — adverse events, dosing schedules, anything not "
-            "in the Document/Section/Chunk/Trial/registry layers). "
-            "When False, return no query result and explain in note."
-        ),
+        description="False if the question cannot be grounded in the graph "
+                    "schema (e.g. asking about data this graph does not "
+                    "model — adverse events, dosing schedules, anything not "
+                    "in the Document/Section/Chunk/Trial/registry layers). "
+                    "When False, return no query result and explain in note.",
     )
-
-    # Small factual note for the Supervisor.
-    #
-    # This is NOT the final natural-language answer.
-    #
-    # Examples:
-    #
-    #     "No trial matched the requested identifier."
-    #
-    #     "The result was capped at 100 rows."
-    #
-    #     "The question refers to information not modeled in the graph."
     note: str = Field(
         default="",
-
-        description=(
-            "Brief FACTUAL note only (not a summary): why "
-            "unanswerable, or an interpretation made (e.g. 'read "
-            "this trial as the most recently updated phase'). The "
-            "Supervisor writes the user-facing summary."
-        ),
+        description="Brief FACTUAL note only (not a summary): why "
+                    "unanswerable, or an interpretation made (e.g. 'read "
+                    "this trial as the most recently updated phase'). The "
+                    "Supervisor writes the user-facing summary.",
     )
 
 
 class TokenUsage(BaseModel):
-    """Token usage for one Trial Graph request.
-
-    Trial Graph may make multiple LLM calls during its internal loop.
-
-    Example:
-
-        Entity resolution
-              ↓
-        Cypher generation
-              ↓
-        Validation
-              ↓
-        Query repair
-              ↓
-        Final decision
-
-    Each model call can contribute token usage.
-
-    This model stores the aggregate usage across all those calls.
-
-
-    COST IS NOT CALCULATED HERE.
-
-    Why?
-
-    Model pricing changes over time.
-
-    Different models have different prices.
-
-    Therefore this service reports:
-
-        tokens + model_id
-
-    and a separate cost/pricing layer can calculate the actual cost.
+    """Token metering for this agent's handling of one request, summed
+    across every LLM call in the tool loop. Rides the response so the
+    Supervisor can aggregate usage across specialists. Cost is
+    deliberately NOT computed here: store tokens+model_id, derive cost
+    from a price table elsewhere — prices change, models vary.
     """
-
-    # Tokens sent to the model across all LLM calls.
     input_tokens: int = 0
-
-    # Cached input tokens.
-    #
-    # These can have a significantly different cost from normal input
-    # tokens, so they are tracked separately.
     cached_input_tokens: int = 0
-
-    # Tokens generated by the model.
     output_tokens: int = 0
-
-    # Total token usage reported by the model/provider.
     total_tokens: int = 0
-
-    # Number of individual LLM calls made during this agent run.
-    #
-    # This is useful for understanding how much looping the agent did.
     llm_calls: int = 0
-
-    # Identifier of the model used.
-    #
-    # Example:
-    #
-    #     gpt-...
-    #
-    # The external pricing system can use this value to determine cost.
     model_id: str = ""
 
 
 class TrialGraphResponse(BaseModel):
-    """Final structured result returned from Trial Graph to the Supervisor.
+    """Final structured result returned to the Supervisor."""
+    result_shape: Literal["graph", "table", "empty", "unanswerable", "not_executed"]
 
-    This is the main contract between:
+    # graph-shaped result -> Supervisor routes to a graph-rendering agent
+    nodes: list[GraphNode] = Field(default_factory=list)
+    relationships: list[GraphRelationship] = Field(default_factory=list)
 
-        Trial Graph
-              │
-              ▼
-        Supervisor
+    # tabular result -> Supervisor routes to a chart-rendering agent
+    columns: list[str] = Field(default_factory=list)
+    rows: list[list[Any]] = Field(default_factory=list)
 
-
-    RESULT SHAPES
-    -------------
-
-    graph:
-        Neo4j returned graph nodes/relationships.
-
-    table:
-        Neo4j returned tabular/scalar data.
-
-    empty:
-        Query executed successfully but produced no useful rows.
-
-    unanswerable:
-        The graph cannot answer the question.
-
-    not_executed:
-        No Cypher execution occurred.
-    """
-
-    # Controls how the Supervisor interprets the result.
-    #
-    # Literal prevents unexpected result-shape values.
-    result_shape: Literal[
-        "graph",
-        "table",
-        "empty",
-        "unanswerable",
-        "not_executed"
-    ]
-
-
-    # ══════════════════════════════════════════════════════════════════
-    # GRAPH RESULT
-    # ══════════════════════════════════════════════════════════════════
-
-    # Populated when result_shape == "graph".
-    #
-    # Supervisor can use this to render a graph visualization.
-    nodes: list[GraphNode] = Field(
-        default_factory=list
-    )
-
-    # Relationships connecting the graph nodes.
-    relationships: list[GraphRelationship] = Field(
-        default_factory=list
-    )
-
-
-    # ══════════════════════════════════════════════════════════════════
-    # TABLE RESULT
-    # ══════════════════════════════════════════════════════════════════
-
-    # Column names for a tabular result.
-    #
-    # Example:
-    #
-    #     ["nctId", "phase", "status"]
-    columns: list[str] = Field(
-        default_factory=list
-    )
-
-    # Table values.
-    #
-    # Example:
-    #
-    #     [
-    #         ["NCT03434379", "Phase 3", "Completed"],
-    #         ["NCT01234567", "Phase 2", "Recruiting"]
-    #     ]
-    #
-    # These rows are captured from Neo4j.
-    # They are NOT generated by the LLM.
-    rows: list[list[Any]] = Field(
-        default_factory=list
-    )
-
-
-    # ══════════════════════════════════════════════════════════════════
-    # METADATA
-    # ══════════════════════════════════════════════════════════════════
-
-    # Exact Cypher query that was actually executed.
-    #
-    # Important:
-    #
-    # This comes from the execution middleware/tool, not ModelDecision.
-    #
-    # It may include a middleware-injected LIMIT.
+    # metadata (audit + routing + honest summarization by the Supervisor)
     cypher: str = ""
-
-    # Business entities surfaced by the model.
-    entities: list[str] = Field(
-        default_factory=list
-    )
-
-    # IDs that can be used to trace the returned data back to its
-    # source/grounding records.
-    grounding_record_ids: list[str] = Field(
-        default_factory=list
-    )
-
-    # Factual information that helps the Supervisor understand the
-    # result without asking Trial Graph to write a summary.
-    #
-    # Examples:
-    #
-    #     "10 rows returned."
-    #
-    #     "Result capped at 100 rows."
-    #
-    #     "Question is not represented in the graph schema."
+    entities: list[str] = Field(default_factory=list)
+    grounding_record_ids: list[str] = Field(default_factory=list)
     result_note: str = Field(
         default="",
-
-        description=(
-            "Factual signal for the Supervisor: row/node count, "
-            "truncation flag, or why the question was unanswerable."
-        ),
+        description="Factual signal for the Supervisor: row/node count, "
+                    "truncation flag, or why the question was unanswerable.",
     )
-
-    # Aggregated token usage across all model calls.
-    usage: TokenUsage = Field(
-        default_factory=TokenUsage
-    )
+    usage: TokenUsage = Field(default_factory=TokenUsage)
 
 
-def collect_usage(
-    messages,
-    model_id: str
-) -> TokenUsage:
-    """Aggregate token usage across every LLM call in the agent loop.
+def collect_usage(messages, model_id: str) -> TokenUsage:
+    """Sum token usage across every LLM call in the loop.
 
-    The Trial Graph agent may call the model multiple times.
-
-    Example:
-
-        LLM call #1
-            ↓
-        entity resolution
-            ↓
-        LLM call #2
-            ↓
-        Cypher generation
-            ↓
-        LLM call #3
-            ↓
-        final decision
-
-    We want ONE TokenUsage object representing the complete request.
-
-
-    WHY USE add_usage()
-    -------------------
-
-    LangChain provides:
-
-        langchain_core.messages.ai.add_usage
-
-    instead of manually adding:
-
-        input_tokens
-        output_tokens
-        total_tokens
-
-    add_usage() also handles nested usage information such as:
-
-        input_token_details
-            └── cache_read
-
-        output_token_details
-            └── reasoning tokens
-
-    A manual implementation could silently lose this information.
+    Uses langchain_core's own add_usage rather than adding fields by hand —
+    it also sums input_token_details (cache reads) and output_token_details
+    (reasoning tokens), which a manual sum silently drops. Cached input is
+    roughly an order of magnitude cheaper, so ignoring it reports a cost
+    that is simply wrong.
     """
-
-    # Import here rather than at module import time.
-    #
-    # This keeps usage aggregation isolated from the rest of the schema
-    # definitions.
     from langchain_core.messages.ai import add_usage
 
-
-    # Running total of usage across all messages/LLM calls.
     total = None
-
-    # Number of messages that contained usage metadata.
     calls = 0
-
-
-    # The agent's message list contains AI messages and tool messages.
-    #
-    # We inspect every message because multiple AI messages may represent
-    # multiple LLM calls in the same agent loop.
     for message in messages or []:
-
-        # Normal LangChain message:
-        #
-        #     message.usage_metadata
-        meta = getattr(
-            message,
-            "usage_metadata",
-            None
-        )
-
-        # Some serialized/dictionary messages may instead expose:
-        #
-        #     {
-        #         "usage_metadata": {...}
-        #     }
+        meta = getattr(message, "usage_metadata", None)
         if meta is None and isinstance(message, dict):
-
-            meta = message.get(
-                "usage_metadata"
-            )
-
-        # Ignore messages that don't contain usage information.
+            meta = message.get("usage_metadata")
         if not meta:
             continue
-
-        # Add this message's usage to the running total.
-        #
-        # add_usage() handles nested usage details correctly.
-        total = add_usage(
-            total,
-            meta
-        )
-
-        # Count this as one LLM usage-bearing call.
+        total = add_usage(total, meta)
         calls += 1
 
-
-    # No usage information was available.
-    #
-    # Still return the model ID so the caller knows which model was
-    # configured for the request.
     if not total:
+        return TokenUsage(model_id=model_id)
 
-        return TokenUsage(
-            model_id=model_id
-        )
-
-
-    # Build the normalized TokenUsage response.
     usage = TokenUsage(
         model_id=model_id,
-
-        input_tokens=int(
-            total.get("input_tokens", 0) or 0
-        ),
-
-        output_tokens=int(
-            total.get("output_tokens", 0) or 0
-        ),
-
-        total_tokens=int(
-            total.get("total_tokens", 0) or 0
-        ),
-
-        llm_calls=calls
+        input_tokens=int(total.get("input_tokens", 0) or 0),
+        output_tokens=int(total.get("output_tokens", 0) or 0),
+        total_tokens=int(total.get("total_tokens", 0) or 0),
+        llm_calls=calls,
     )
-
-
-    # Some providers may return input/output tokens without explicitly
-    # providing total_tokens.
-    #
-    # In that case, derive total_tokens ourselves.
-    if (
-        usage.total_tokens == 0
-        and (
-            usage.input_tokens
-            or usage.output_tokens
-        )
-    ):
-
-        usage.total_tokens = (
-            usage.input_tokens
-            + usage.output_tokens
-        )
-
-
-    # Extract cached input token usage.
-    #
-    # LangChain stores this inside:
-    #
-    #     input_token_details.cache_read
-    #
-    # Cached tokens can have different pricing, so preserving this value
-    # is important for accurate cost calculation later.
-    cached = (
-        total.get("input_token_details") or {}
-    ).get("cache_read")
-
-
-    # Only populate the field if the value exists.
-    if cached and hasattr(
-        usage,
-        "cached_input_tokens"
-    ):
-
-        usage.cached_input_tokens = int(
-            cached
-        )
-
-
-    # Return the complete aggregated usage information.
+    if usage.total_tokens == 0 and (usage.input_tokens or usage.output_tokens):
+        usage.total_tokens = usage.input_tokens + usage.output_tokens
+    cached = (total.get("input_token_details") or {}).get("cache_read")
+    if cached and hasattr(usage, "cached_input_tokens"):
+        usage.cached_input_tokens = int(cached)
     return usage

@@ -20,7 +20,6 @@ import io
 import shutil
 import subprocess
 import sys
-import time
 import zipfile
 from pathlib import Path
 
@@ -56,26 +55,6 @@ def build_zip() -> bytes:
     return buf.getvalue()
 
 
-# What Lambda says while a just-created role or policy has not propagated yet.
-_PROPAGATING = ("does not have permissions to call", "cannot be assumed by Lambda")
-
-
-def _role_ready(call, attempts: int = 12, wait_s: int = 10):
-    """Run a Lambda call that depends on the execution role; retry ONLY while IAM is
-    still propagating it (a new role, or a policy just put on it — e.g. the
-    ec2:CreateNetworkInterface permission a VPC function needs). Lambda checks the
-    role when the function is created, often before IAM has finished. Any other
-    error raises at once."""
-    for attempt in range(attempts):
-        try:
-            return call()
-        except lambda_client.exceptions.InvalidParameterValueException as exc:
-            if not any(m in str(exc) for m in _PROPAGATING) or attempt == attempts - 1:
-                raise
-            print(f"  waiting for the new IAM role to propagate ({(attempt + 1) * wait_s}s)…")
-            time.sleep(wait_s)
-
-
 def deploy(role_arn: str, env: dict, subnet_ids: list[str], security_group_id: str) -> str:
     zip_bytes = build_zip()
     config = dict(Role=role_arn, Environment={"Variables": env}, Timeout=TIMEOUT_S, MemorySize=MEMORY_MB,
@@ -84,15 +63,15 @@ def deploy(role_arn: str, env: dict, subnet_ids: list[str], security_group_id: s
         lambda_client.get_function(FunctionName=FUNCTION_NAME)
     except lambda_client.exceptions.ResourceNotFoundException:
         print(f"  creating function {FUNCTION_NAME!r} (in the VPC — about a minute)")
-        arn = _role_ready(lambda: lambda_client.create_function(
-            FunctionName=FUNCTION_NAME, Runtime="python3.12", Architectures=["x86_64"],
-            Handler="handler.lambda_handler", Code={"ZipFile": zip_bytes}, **config))["FunctionArn"]
+        arn = lambda_client.create_function(FunctionName=FUNCTION_NAME, Runtime="python3.12",
+                                            Architectures=["x86_64"], Handler="handler.lambda_handler",
+                                            Code={"ZipFile": zip_bytes}, **config)["FunctionArn"]
         lambda_client.get_waiter("function_active_v2").wait(FunctionName=FUNCTION_NAME)
         return arn
     print(f"  updating function {FUNCTION_NAME!r}")
     lambda_client.update_function_code(FunctionName=FUNCTION_NAME, ZipFile=zip_bytes)
     lambda_client.get_waiter("function_updated_v2").wait(FunctionName=FUNCTION_NAME)
-    _role_ready(lambda: lambda_client.update_function_configuration(FunctionName=FUNCTION_NAME, **config))
+    lambda_client.update_function_configuration(FunctionName=FUNCTION_NAME, **config)
     lambda_client.get_waiter("function_updated_v2").wait(FunctionName=FUNCTION_NAME)
     return lambda_client.get_function(FunctionName=FUNCTION_NAME)["Configuration"]["FunctionArn"]
 

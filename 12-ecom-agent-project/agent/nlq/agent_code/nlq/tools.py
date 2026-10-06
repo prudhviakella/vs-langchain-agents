@@ -81,6 +81,7 @@ async def validate_sql(sql: str) -> str:
         result = await db.explain(sql)
     except db.GuardRejected as exc:
         return f"GUARD: {exc}"
+    P.emit(P.VALIDATED, detail=("valid — " if result.get("ok") else "invalid — ") + str(result.get("detail")))
     return ("VALID: " if result.get("ok") else "INVALID: ") + str(result.get("detail"))
 
 
@@ -93,10 +94,12 @@ async def execute_sql(sql: str, tool_call_id: Annotated[str, InjectedToolCallId]
     try:
         captured = await db.execute(sql)
     except (db.SqlError, db.GuardRejected) as exc:
+        P.emit(P.ERROR, sql=sql, detail=str(exc))
         return Command(update={"messages": [ToolMessage(
             content=f"SQL_ERROR: {exc}\nRewrite the query.", tool_call_id=tool_call_id)]})
     P.emit(P.RESULT, detail=f"{captured['row_count']:,} rows x {len(captured['columns'])} columns"
-           + (" (capped)" if captured.get("truncated") else ""), elapsed_ms=captured.get("elapsed_ms"))
+           + (" (capped)" if captured.get("truncated") else ""), elapsed_ms=captured.get("elapsed_ms"),
+           rows=captured["row_count"], columns=captured["columns"], truncated=bool(captured.get("truncated")))
     return Command(update={
         "executed_sql": captured.get("sql") or sql,
         "captured": captured,
