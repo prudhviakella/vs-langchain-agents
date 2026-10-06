@@ -128,8 +128,12 @@ Students then add `--image` to every deploy and need no Docker at all:
 cd trial_graph  && python deploy.py --image <dockerhub-user>/trial-graph-agent:1.0
 cd ../trial_search && python deploy.py --image <dockerhub-user>/trial-search-agent:1.0
 cd ../supervisor   && python deploy.py --image <dockerhub-user>/trial-supervisor-agent:1.0
-cd ../webapp/deploy && python deploy.py --image <dockerhub-user>/trial-webapp-backend:1.0
+cd ../webapp/deploy && python deploy.py --image <dockerhub-user>/trial-webapp-backend:1.0 \
+                       --frontend-image <dockerhub-user>/trial-webapp-frontend:1.0
 ```
+
+The frontend image holds only the built files (`FROM scratch` + `/dist`); the
+web app deploy uploads them to S3, so students need neither Docker nor Node.
 
 ### Step 1 — Deploy trial_graph
 
