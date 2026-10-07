@@ -1,5 +1,8 @@
 """Backend test setup: in-memory store, a fixed signing key, a fake supervisor.
 
+The app always stores in DynamoDB; no setting selects anything else. The
+tests install MemoryStore with store.use_store() — the only way it is used.
+
 The fake supervisor returns a response in the phase-1 SupervisorResponse
 shape — calls, tool_calls, results with a Cypher table and re-ranked
 passages, usage, trace id — so answers.py is tested against the real
@@ -11,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-os.environ.update(APP_STORE="memory", SESSION_SECRET="test-signing-key",
+os.environ.update(SESSION_SECRET="test-signing-key",
                   ADMIN_USERS="admin.user", SUPERVISOR_ARN="arn:aws:bedrock-agentcore:us-east-1:1:runtime/sup")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tests"))   # agents' test helpers
@@ -20,7 +23,10 @@ from fastapi.testclient import TestClient   # noqa: E402
 
 from app import supervisor   # noqa: E402
 from app.main import app   # noqa: E402
-from app.store import get_store   # noqa: E402
+from app.store import get_store, use_store   # noqa: E402
+from app.store.memory import MemoryStore   # noqa: E402
+
+use_store(MemoryStore())        # no test may reach a real table by accident
 
 TRACE = "6ab8b8452741aafe1a2cd0731ad0c3ea"
 
@@ -77,9 +83,9 @@ def asked(monkeypatch):
 
 @pytest.fixture
 def fresh_store():
-    get_store.cache_clear()
+    use_store(MemoryStore())
     yield get_store()
-    get_store.cache_clear()
+    use_store(MemoryStore())
 
 
 def signed_in(username: str = "prudhvi", password: str = "correct-horse-1") -> TestClient:

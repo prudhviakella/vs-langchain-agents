@@ -22,6 +22,11 @@ import jwt
 import pytest
 
 from app import answers, session, settings, supervisor
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from app.main import app
 from app.store.memory import MemoryStore
 from conftest import TRACE, signed_in, supervisor_response
 
@@ -334,3 +339,86 @@ def test_each_search_reaches_the_answer_details(fresh_store, asked):
     assert search_step["agent"] == "trial_search"
     assert search_step["searches"][0]["query"] == "exclusion criteria"
     assert search_step["searches"][0]["reranked"] is True
+
+
+
+# ── storage: DynamoDB on every run, local included ─────────────────────
+def test_no_setting_selects_an_in_memory_store(monkeypatch):
+    """The app's own store is DynamoStore whatever the environment says."""
+    from app import settings, store
+    from app.store.dynamodb import DynamoStore
+    monkeypatch.setenv("APP_STORE", "memory")              # the removed switch: ignored
+    store.use_store(None)
+    try:
+        assert isinstance(store.get_store(), DynamoStore)
+        assert not hasattr(settings, "STORE")
+    finally:
+        store.use_store(MemoryStore())
+
+
+class _Waiter:
+    def __init__(self, calls): self.calls = calls
+    def wait(self, **kw): self.calls.append(("wait", kw["TableName"]))
+
+
+def _ddb(exists: bool):
+    from test_payloads import Recording
+    calls = []
+
+    def describe(**kw):
+        if not exists:
+            raise client.exceptions.ResourceNotFoundException()
+        return {"Table": {"TableStatus": "ACTIVE"}}
+    client = Recording("dynamodb", {"describe_table": describe,
+                                    "create_table": lambda **kw: calls.append(("create", kw)) or {}})
+    client.get_waiter = lambda name: _Waiter(calls)
+    return client, calls
+
+
+def test_a_local_run_creates_its_table_with_the_stacks_schema():
+    from app.store.dynamodb import DynamoStore, TABLE_SCHEMA
+    client, calls = _ddb(exists=False)
+    assert DynamoStore(client=client, table="trial-webapp-local").ensure_ready(create=True) == "created"
+    (kind, created), waited = calls
+    assert kind == "create" and created["TableName"] == "trial-webapp-local"
+    assert {k: v for k, v in created.items() if k != "TableName"} == TABLE_SCHEMA
+    assert waited == ("wait", "trial-webapp-local"), "ACTIVE before the first request"
+
+
+def test_a_named_table_that_is_missing_is_reported_not_created():
+    from app.store.dynamodb import DynamoStore
+    client, calls = _ddb(exists=False)
+    with pytest.raises(RuntimeError, match="created by the web app's CloudFormation stack"):
+        DynamoStore(client=client, table="trial-webapp").ensure_ready(create=False)
+    assert calls == [], "a table named by APP_TABLE belongs to the stack — never created here"
+
+
+def test_an_existing_table_is_used_as_it_is():
+    from app.store.dynamodb import DynamoStore
+    client, calls = _ddb(exists=True)
+    assert DynamoStore(client=client, table="trial-webapp").ensure_ready(create=False) == "ready"
+    assert calls == [("wait", "trial-webapp")]
+
+
+def test_local_table_schema_matches_the_stack():
+    """The local table and the deployed one must have the same keys and
+    indexes, or a query that works locally fails in AWS."""
+    import yaml
+    from app.store.dynamodb import TABLE_SCHEMA
+
+    class Loader(yaml.SafeLoader):
+        pass
+    Loader.add_multi_constructor("!", lambda loader, tag, node: None)   # !Ref, !Sub ...
+    template = yaml.load((Path(__file__).resolve().parents[2] / "deploy" / "template.yaml")
+                         .read_text(), Loader=Loader)
+    props = template["Resources"]["Table"]["Properties"]
+    assert {k: props[k] for k in TABLE_SCHEMA} == TABLE_SCHEMA
+
+
+def test_the_table_is_ready_before_the_first_request(fresh_store):
+    """Startup (lifespan) runs ensure_ready, once."""
+    seen = []
+    fresh_store.ensure_ready = lambda create: seen.append(create) or "ready"
+    with TestClient(app):
+        pass
+    assert len(seen) == 1

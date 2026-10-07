@@ -30,16 +30,52 @@ search stats), `tools` (memory reads and writes), `citations` (best re-ranked
 first), `artifact` (table or graph), `memory` (what was recalled),
 `decision`, `usage`, `cost_usd`, `latency_ms`, `trace_url`.
 
-## Run locally (no AWS)
+## Run locally — everything is stored in DynamoDB
 
-```bash
-pip install -r requirements.txt
-APP_STORE=memory SUPERVISOR_ARN=arn:... CORS_ORIGINS=http://localhost:5173 \
-  uvicorn app.main:app --port 8000
+```
+where it runs        APP_TABLE          DynamoDB table          created by
+your machine         not set            trial-webapp-local      this backend, on its first start
+AWS (deployed)       set by the stack   trial-webapp            the CloudFormation stack
 ```
 
-`APP_STORE=memory` keeps everything in the process. A real `SUPERVISOR_ARN`
-and AWS credentials are still needed to get answers.
+Users, conversations, messages and feedback always go to DynamoDB — there is
+no in-memory mode. A local run uses its own table, `trial-webapp-local`, and
+creates it on first start (about 10 seconds, once). It is a separate table so
+that the CloudFormation stack can still create `trial-webapp` later.
+
+Your AWS credentials (`aws configure`) are used for DynamoDB and for calling
+the supervisor. Use the supervisor ARN printed by `supervisor/deploy.py`
+(also in `supervisor/deployment.json`).
+
+**Mac**
+```bash
+cd ~/PycharmProjects/vs-langchain-agents/11-trial-agents-project/webapp/backend
+pip install -r requirements.txt
+SUPERVISOR_ARN=<supervisor ARN> CORS_ORIGINS=http://localhost:5173 uvicorn app.main:app --port 8000
+```
+
+**Windows**
+```powershell
+cd $HOME\PycharmProjects\vs-langchain-agents\11-trial-agents-project\webapp\backend
+pip install -r requirements.txt
+$env:SUPERVISOR_ARN="<supervisor ARN>"; $env:CORS_ORIGINS="http://localhost:5173"
+uvicorn app.main:app --port 8000
+```
+
+The start log says which table it used:
+```
+INFO app.main DynamoDB table 'trial-webapp-local' created (region us-east-1)     first start
+INFO app.main DynamoDB table 'trial-webapp-local' ready (region us-east-1)       every start after
+```
+
+Restarting the backend signs you out (a local run has no shared signing key),
+but your user and conversations are still in the table — sign in again. To
+stay signed in across restarts, also set `SESSION_SECRET` to any long random
+string.
+
+To work locally against the **deployed** app's data instead, also set
+`APP_TABLE=trial-webapp`. A table named this way is never created by the
+backend; if it does not exist, the start stops and says so.
 
 ## Tests
 

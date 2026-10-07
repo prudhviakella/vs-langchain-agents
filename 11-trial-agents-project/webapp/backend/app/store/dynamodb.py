@@ -21,11 +21,20 @@ only ever read whole. One string attribute avoids DynamoDB's number and
 nesting rules and keeps the item's size predictable; answers.py caps it
 well under the 400 KB item limit.
 
+THE TABLE — ONE SCHEMA, TWO CREATORS
+
+    AWS run     the CloudFormation stack creates it (webapp/deploy/template.yaml)
+    local run   ensure_ready() creates it on start, from TABLE_SCHEMA below
+    Both describe the same keys and indexes; a test compares them, so a local
+    table can never drift from the deployed one.
+
 WHAT THIS DOES NOT DO
 
     Search is by title and the conversation's own questions (search_text,
     kept on META), filtered in the query — enough per user; a full-text
     index across all messages would need OpenSearch.
+    It never creates a table it was pointed at with APP_TABLE: that one is
+    the stack's, and a missing one is reported, not silently replaced.
 """
 import json
 from decimal import Decimal
@@ -38,6 +47,22 @@ from .base import Store, new_id, now_iso
 
 _ser, _de = TypeSerializer(), TypeDeserializer()
 GSI1, GSI2 = "GSI1", "GSI2"
+
+# Must match the Table resource in webapp/deploy/template.yaml — checked by
+# tests/test_backend.py::test_local_table_schema_matches_the_stack.
+TABLE_SCHEMA = {
+    "BillingMode": "PAY_PER_REQUEST",
+    "AttributeDefinitions": [{"AttributeName": n, "AttributeType": "S"}
+                             for n in ("PK", "SK", "GSI1PK", "GSI1SK", "GSI2PK", "GSI2SK")],
+    "KeySchema": [{"AttributeName": "PK", "KeyType": "HASH"},
+                  {"AttributeName": "SK", "KeyType": "RANGE"}],
+    "GlobalSecondaryIndexes": [
+        {"IndexName": index,
+         "KeySchema": [{"AttributeName": f"{index}PK", "KeyType": "HASH"},
+                       {"AttributeName": f"{index}SK", "KeyType": "RANGE"}],
+         "Projection": {"ProjectionType": "ALL"}}
+        for index in (GSI1, GSI2)],
+}
 
 
 def _item(values: dict) -> dict:
@@ -65,6 +90,36 @@ class DynamoStore(Store):
         self.ddb = client or boto3.client(
             "dynamodb", region_name=settings.REGION,
             **({"endpoint_url": settings.DDB_ENDPOINT} if settings.DDB_ENDPOINT else {}))
+
+    # ── the table ────────────────────────────────────────────────────────
+    def ensure_ready(self, create: bool) -> str:
+        """Make sure the table exists and is ACTIVE, before the first request.
+
+        STEP 1  describe it — present: wait until ACTIVE, "ready"
+        STEP 2  missing and this run owns it (a local run): create it from
+                TABLE_SCHEMA, wait until ACTIVE, "created"
+        STEP 3  missing and it was named with APP_TABLE: stop, and say so
+
+        Called once at startup (main.py). Doing it on the first request
+        instead left that request — the first sign-in — waiting about ten
+        seconds while the table was created.
+        """
+        waiter = self.ddb.get_waiter("table_exists")
+        wait = {"TableName": self.table, "WaiterConfig": {"Delay": 2, "MaxAttempts": 90}}
+        try:
+            self.ddb.describe_table(TableName=self.table)
+        except self.ddb.exceptions.ResourceNotFoundException:
+            if not create:
+                raise RuntimeError(
+                    f"DynamoDB table {self.table!r} does not exist in {settings.REGION}. "
+                    "It is created by the web app's CloudFormation stack "
+                    "(webapp/deploy/deploy.py); or unset APP_TABLE to use the local "
+                    f"table {settings.LOCAL_TABLE!r}, which is created automatically.")
+            self.ddb.create_table(TableName=self.table, **TABLE_SCHEMA)
+            waiter.wait(**wait)
+            return "created"
+        waiter.wait(**wait)
+        return "ready"
 
     # ── helpers ──────────────────────────────────────────────────────────
     def _query(self, **kwargs) -> list[dict]:

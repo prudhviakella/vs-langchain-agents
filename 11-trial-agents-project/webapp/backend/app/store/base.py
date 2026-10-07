@@ -26,6 +26,11 @@ def new_id() -> str:
 
 
 class Store(ABC):
+    def ensure_ready(self, create: bool) -> str:
+        """Prepare durable storage before the first request. A store with
+        nothing to prepare (the tests' MemoryStore) is always ready."""
+        return "ready"
+
     @abstractmethod
     def get_user(self, username: str) -> dict | None: ...
     @abstractmethod

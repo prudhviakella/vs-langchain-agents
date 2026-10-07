@@ -50,8 +50,10 @@ def _signing_key() -> str:
             _key = json.loads(raw)["secret"]
         except (ValueError, KeyError, TypeError):
             _key = raw
-    elif settings.STORE == "memory":
-        _key = secrets.token_urlsafe(48)          # one local process only
+    elif settings.OWNS_TABLE:
+        # A local run: one process, so a random key is safe. A restart signs
+        # you out; your user and conversations stay in DynamoDB.
+        _key = secrets.token_urlsafe(48)
     else:
         raise RuntimeError("SESSION_SECRET_ID is not set: every backend task must share "
                            "one signing key, or sessions fail at random between tasks")

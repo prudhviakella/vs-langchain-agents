@@ -1,9 +1,12 @@
-"""In-process store: tests and zero-setup local runs. Nothing is durable.
+"""In-process store — for the unit tests only. Nothing is durable.
+
+The tests install it with store.use_store(MemoryStore()). The app itself
+never selects it: every run, local or in AWS, stores in DynamoDB.
 
 WHAT THIS DOES NOT DO
 
-    It does not survive a restart or share data between processes — never
-    run it behind the load balancer.
+    It does not survive a restart or share data between processes, and no
+    setting or environment variable turns it on.
 """
 import copy
 
