@@ -308,7 +308,7 @@ export function Reasoning({ text, defaultOpen = false }: { text: string; default
         <div className="mt-2 space-y-2 rounded-lg border border-line bg-canvas/70 px-3 py-2 text-xs leading-relaxed text-body">
           {parts.map((p, i) =>
             i % 2 === 1 ? (
-              <pre key={i} className="whitespace-pre-wrap break-words rounded-md bg-ink px-3 py-2 font-mono text-[11px] leading-relaxed text-white">
+              <pre key={i} className="whitespace-pre-wrap wrap-break-word rounded-md bg-ink px-3 py-2 font-mono text-[11px] leading-relaxed text-white">
                 {formatSql(p.trim())}
               </pre>
             ) : (
@@ -412,7 +412,7 @@ function Feedback({ m }: { m: Message }) {
         <div className="mt-2 flex items-end gap-2">
           <textarea autoFocus rows={2} value={comment} onChange={(e) => setComment(e.target.value)} maxLength={2000}
                     placeholder={vote === "down" ? "What was wrong or missing?" : "Anything to add? (optional)"}
-                    className="flex-1 resize-none rounded-lg border border-line bg-canvas px-3 py-2 text-sm focus:border-brand focus:outline-none" />
+                    className="flex-1 resize-none rounded-lg border border-line bg-canvas px-3 py-2 text-sm focus:border-brand focus:outline-hidden" />
           <Button variant="primary" onClick={send} disabled={fb.isPending}>Send</Button>
           <Button variant="ghost" onClick={() => setOpen(false)}>Close</Button>
         </div>
@@ -436,7 +436,7 @@ function Composer({ busy, onSend, onStop }: { busy: boolean; onSend: (q: string)
         <textarea rows={2} value={text} onChange={(e) => setText(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }}
                   placeholder="Ask about orders, revenue, customers, delivery…"
-                  className="min-h-[44px] flex-1 resize-none rounded-xl border border-line bg-canvas px-3 py-2 text-sm focus:border-brand focus:outline-none" />
+                  className="min-h-[44px] flex-1 resize-none rounded-xl border border-line bg-canvas px-3 py-2 text-sm focus:border-brand focus:outline-hidden" />
         {busy ? <Button variant="danger" onClick={onStop}>Stop</Button>
               : <Button variant="primary" onClick={submit} disabled={!text.trim()}>Send</Button>}
       </div>
@@ -470,7 +470,7 @@ function inline(s: string) {
   return s.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, i) => {
     if (part.startsWith("**") && part.endsWith("**")) return <strong key={i}>{part.slice(2, -2)}</strong>;
     if (part.startsWith("`") && part.endsWith("`"))
-      return <code key={i} className="rounded bg-canvas px-1 font-mono text-[13px]">{part.slice(1, -1)}</code>;
+      return <code key={i} className="rounded-sm bg-canvas px-1 font-mono text-[13px]">{part.slice(1, -1)}</code>;
     return <Fragment key={i}>{part}</Fragment>;
   });
 }

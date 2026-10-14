@@ -12,13 +12,13 @@ export function FullscreenModal({ title, onClose, children }: { title?: string; 
   }, [onClose]);
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex bg-black/40 p-4 backdrop-blur-sm sm:p-8" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex bg-black/40 p-4 backdrop-blur-xs sm:p-8" onClick={onClose}>
       <div className="mx-auto flex h-full w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-line bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <p className="truncate text-sm font-semibold text-ink">{title ?? "Preview"}</p>
           <button onClick={onClose} aria-label="Close" title="Close (Esc)"
-            className="flex h-7 w-7 items-center justify-center rounded text-muted hover:bg-canvas hover:text-ink">
+            className="flex h-7 w-7 items-center justify-center rounded-sm text-muted hover:bg-canvas hover:text-ink">
             <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path strokeLinecap="round" d="M6 6l12 12M18 6L6 18" />
             </svg>

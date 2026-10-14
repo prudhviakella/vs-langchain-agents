@@ -53,7 +53,7 @@ function SortCaret({ state }: { state: SortDir | "none" }) {
 function PageButton({ disabled, onClick, label, children }: { disabled?: boolean; onClick: () => void; label: string; children: ReactNode }) {
   return (
     <button type="button" onClick={onClick} disabled={disabled} aria-label={label}
-      className="inline-flex h-7 min-w-7 items-center justify-center rounded-md border border-line bg-white px-1.5 text-muted shadow-xs transition-all duration-150 ease-premium hover:border-[#D8DBDF] hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line disabled:hover:text-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/40">
+      className="inline-flex h-7 min-w-7 items-center justify-center rounded-md border border-line bg-white px-1.5 text-muted shadow-xs transition-all duration-150 ease-premium hover:border-[#D8DBDF] hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line disabled:hover:text-muted focus:outline-hidden focus-visible:ring-2 focus-visible:ring-brand/40">
       {children}
     </button>
   );
@@ -124,7 +124,7 @@ export function DataTable<T>({
             <label className="relative ml-auto flex items-center">
               <svg className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-faint" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="7" /><path d="m21 21-4-4" /></svg>
               <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={searchPlaceholder}
-                className="w-52 max-w-full rounded-lg border border-line bg-white py-1.5 pl-8 pr-3 text-sm text-ink shadow-xs transition placeholder:text-faint hover:border-[#D8DBDF] focus:border-brand/50 focus:outline-none focus:ring-2 focus:ring-brand/20" />
+                className="w-52 max-w-full rounded-lg border border-line bg-white py-1.5 pl-8 pr-3 text-sm text-ink shadow-xs transition placeholder:text-faint hover:border-[#D8DBDF] focus:border-brand/50 focus:outline-hidden focus:ring-2 focus:ring-brand/20" />
             </label>
           )}
         </div>
@@ -179,7 +179,7 @@ export function DataTable<T>({
             <label className="hidden items-center gap-1.5 text-xs text-muted sm:flex">
               Rows
               <select value={size} onChange={(e) => setSize(Number(e.target.value))}
-                className="cursor-pointer rounded-md border border-line bg-white px-1.5 py-1 text-xs text-ink shadow-xs focus:border-brand/50 focus:outline-none focus:ring-2 focus:ring-brand/20">
+                className="cursor-pointer rounded-md border border-line bg-white px-1.5 py-1 text-xs text-ink shadow-xs focus:border-brand/50 focus:outline-hidden focus:ring-2 focus:ring-brand/20">
                 {pageSizeOptions.map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             </label>

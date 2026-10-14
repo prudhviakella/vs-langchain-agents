@@ -222,7 +222,7 @@ function KbRow({ r }: { r: KbRecord }) {
   return (
     <div className="rounded-xl border border-line bg-card px-4 py-2 text-sm">
       <button className="flex w-full items-baseline gap-2 text-left" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        <span className="rounded bg-canvas px-1.5 py-0.5 font-mono text-[10px] text-muted">{r.type}</span>
+        <span className="rounded-sm bg-canvas px-1.5 py-0.5 font-mono text-[10px] text-muted">{r.type}</span>
         <span className="font-semibold text-ink">{r.title}</span>
         <span className="ml-auto text-[11px] text-faint">{r.namespace}{r.score !== undefined ? ` · ${r.score}` : ""}</span>
       </button>

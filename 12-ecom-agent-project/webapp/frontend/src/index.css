@@ -1,6 +1,189 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+@theme {
+  --color-canvas: #f5f6f8;
+  --color-card: #ffffff;
+  --color-line: #e6e8eb;
+  --color-ink: #15171a;
+  --color-body: #3a3f45;
+  --color-muted: #6b7280;
+  --color-faint: #8a9099;
+
+  --color-brand-50: #eff6ff;
+  --color-brand-600: #1d4ed8;
+  --color-brand: #2563eb;
+
+  --color-primary: #1e3a5f;
+  --color-primary-dark: #11233a;
+  --color-primary-light: #a3aebd;
+
+  --color-graphite: #535353;
+  --color-ash: #878787;
+  --color-frost: #f8fafc;
+
+  --color-slate: #475569;
+
+  --color-mist: #e8edf5;
+  --color-azure: #01579b;
+
+  --color-indigo: #1e40af;
+
+  --color-skyTint: #eff6ff;
+
+  --color-sky: #3b82f6;
+
+  --color-navy: #183865;
+  --color-cobalt: #1565c0;
+
+  --color-amber: #a3660a;
+
+  --color-linkBlue: #1976d2;
+  --color-charcoal: #303030;
+
+  --color-violet: #8b5cf6;
+
+  --color-cyan: #06b6d4;
+
+  --color-ok: #16a34a;
+
+  --color-flag-crit: #dc2626;
+  --color-flag-critbg: #fde7e7;
+  --color-flag-high: #b45309;
+  --color-flag-highbg: #fbefd9;
+  --color-flag-med: #5b6470;
+  --color-flag-medbg: #eff0f2;
+  --color-flag-low: #15803d;
+  --color-flag-lowbg: #e7f4ec;
+
+  --font-sans:
+    'Plus Jakarta Sans', Inter, ui-sans-serif, system-ui, -apple-system,
+    Segoe UI, Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-sm:
+    0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+  --shadow-card:
+    0 1px 2px rgba(16, 24, 40, 0.05), 0 4px 10px -2px rgba(16, 24, 40, 0.07);
+  --shadow-card-hover:
+    0 2px 6px rgba(16, 24, 40, 0.06), 0 12px 28px -8px rgba(16, 24, 40, 0.14);
+  --shadow-md:
+    0 4px 12px -2px rgba(16, 24, 40, 0.08),
+    0 2px 6px -2px rgba(16, 24, 40, 0.06);
+  --shadow-pop:
+    0 4px 12px -2px rgba(16, 24, 40, 0.08),
+    0 14px 34px -8px rgba(16, 24, 40, 0.16);
+  --shadow-lg: 0 12px 40px -8px rgba(16, 24, 40, 0.2);
+  --shadow-header:
+    0 1px 0 rgba(16, 24, 40, 0.04), 0 4px 14px -8px rgba(16, 24, 40, 0.1);
+
+  --radius-xl2: 12px;
+  --radius-xl3: 16px;
+
+  --ease-premium: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  --animate-fade-in: fade-in 0.2s ease-out both;
+  --animate-fade-in-up: fade-in-up 0.24s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  --animate-scale-in: scale-in 0.16s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  --animate-shimmer: shimmer 1.4s linear infinite;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes fade-in-up {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes scale-in {
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  @keyframes shimmer {
+    from {
+      background-position: -200% 0;
+    }
+    to {
+      background-position: 200% 0;
+    }
+  }
+}
+
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+
+  /* v4 gives buttons the default cursor; v3 gave them a pointer. Kept, so
+     every clickable control still shows the hand it did before the upgrade. */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+@utility card-interactive {
+  /* Interactive cards/tiles gently lift on hover. */
+  transition:
+    color 0.2s cubic-bezier(0.22, 0.61, 0.36, 1),
+    background-color 0.2s cubic-bezier(0.22, 0.61, 0.36, 1),
+    border-color 0.2s cubic-bezier(0.22, 0.61, 0.36, 1),
+    box-shadow 0.2s cubic-bezier(0.22, 0.61, 0.36, 1),
+    transform 0.2s cubic-bezier(0.22, 0.61, 0.36, 1);
+  &:hover {
+    transform: translateY(-2px);
+    border-color: #dcdfe3;
+    box-shadow:
+      0 2px 4px rgba(16, 24, 40, 0.05),
+      0 10px 24px -6px rgba(16, 24, 40, 0.1);
+  }
+}
+
+@utility row-interactive {
+  /* Subtle row highlight for data tables / lists. */
+  transition:
+    background-color 0.15s cubic-bezier(0.22, 0.61, 0.36, 1),
+    color 0.15s cubic-bezier(0.22, 0.61, 0.36, 1);
+  &:hover {
+    background-color: #f5f6f8;
+  }
+}
+
+@utility skeleton {
+  /* Skeleton shimmer for loading placeholders. */
+  border-radius: 6px;
+  background: linear-gradient(100deg, #eef0f2 30%, #f6f7f9 50%, #eef0f2 70%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s linear infinite;
+}
 
 @layer base {
   html, body, #root { height: 100%; }
@@ -47,34 +230,6 @@
   `ease-premium` or `shadow-card-hover` isn't present in tailwind.config.js.
 */
 @layer components {
-  /* Interactive cards/tiles gently lift on hover. */
-  .card-interactive {
-    transition: color .2s cubic-bezier(.22,.61,.36,1),
-                background-color .2s cubic-bezier(.22,.61,.36,1),
-                border-color .2s cubic-bezier(.22,.61,.36,1),
-                box-shadow .2s cubic-bezier(.22,.61,.36,1),
-                transform .2s cubic-bezier(.22,.61,.36,1);
-  }
-  .card-interactive:hover {
-    transform: translateY(-2px);
-    border-color: #DCDFE3;
-    box-shadow: 0 2px 4px rgba(16,24,40,.05), 0 10px 24px -6px rgba(16,24,40,.10);
-  }
-
-  /* Subtle row highlight for data tables / lists. */
-  .row-interactive {
-    transition: background-color .15s cubic-bezier(.22,.61,.36,1),
-                color .15s cubic-bezier(.22,.61,.36,1);
-  }
-  .row-interactive:hover { background-color: #F5F6F8; }
-
-  /* Skeleton shimmer for loading placeholders. */
-  .skeleton {
-    border-radius: 6px;
-    background: linear-gradient(100deg, #EEF0F2 30%, #F6F7F9 50%, #EEF0F2 70%);
-    background-size: 200% 100%;
-    animation: skeleton-shimmer 1.4s linear infinite;
-  }
   @keyframes skeleton-shimmer {
     from { background-position: -200% 0; }
     to   { background-position: 200% 0; }
