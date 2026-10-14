@@ -1,0 +1,4 @@
+students deploy with (no Docker needed):
+ cd agent/nlq && python deploy.py --image prudhviakella898/ecom-nlq-agent:1.0
+ cd agent/chart_gen && python deploy.py --image prudhviakella898/ecom-chart-gen-agent:1.0
+ cd agent/supervisor && python deploy.py --image prudhviakella898/ecom-supervisor-agent:1.0

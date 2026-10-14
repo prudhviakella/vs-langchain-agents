@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-canvas text-body font-sans antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  /* Crisp tabular figures for ids / metrics set in the mono face. */
+  .font-mono { font-feature-settings: "tnum" 1, "cv01" 1, "ss01" 1; }
+
+  /* Headings sit a hair tighter for a more composed, premium rhythm. */
+  h1, h2, h3 { letter-spacing: -0.011em; }
+
+  /* Refined, quieter scrollbars. */
+  * { scrollbar-width: thin; scrollbar-color: #CBD0D6 transparent; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb {
+    background: #CBD0D6; border-radius: 8px;
+    border: 2px solid transparent; background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover { background: #AEB4BC; background-clip: padding-box; }
+  *::-webkit-scrollbar-track { background: transparent; }
+
+  ::selection { background: rgba(200, 16, 46, 0.14); }
+
+  /* Smooth, consistent easing on anything already animating. */
+  a, button, input, textarea, select, [role="button"] {
+    transition-timing-function: cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.08s !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/*
+  Opt-in helpers. Written as RAW CSS (not @apply of custom theme utilities) so
+  this stylesheet is self-contained and compiles even if a custom key like
+  `ease-premium` or `shadow-card-hover` isn't present in tailwind.config.js.
+*/
+@layer components {
+  /* Interactive cards/tiles gently lift on hover. */
+  .card-interactive {
+    transition: color .2s cubic-bezier(.22,.61,.36,1),
+                background-color .2s cubic-bezier(.22,.61,.36,1),
+                border-color .2s cubic-bezier(.22,.61,.36,1),
+                box-shadow .2s cubic-bezier(.22,.61,.36,1),
+                transform .2s cubic-bezier(.22,.61,.36,1);
+  }
+  .card-interactive:hover {
+    transform: translateY(-2px);
+    border-color: #DCDFE3;
+    box-shadow: 0 2px 4px rgba(16,24,40,.05), 0 10px 24px -6px rgba(16,24,40,.10);
+  }
+
+  /* Subtle row highlight for data tables / lists. */
+  .row-interactive {
+    transition: background-color .15s cubic-bezier(.22,.61,.36,1),
+                color .15s cubic-bezier(.22,.61,.36,1);
+  }
+  .row-interactive:hover { background-color: #F5F6F8; }
+
+  /* Skeleton shimmer for loading placeholders. */
+  .skeleton {
+    border-radius: 6px;
+    background: linear-gradient(100deg, #EEF0F2 30%, #F6F7F9 50%, #EEF0F2 70%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.4s linear infinite;
+  }
+  @keyframes skeleton-shimmer {
+    from { background-position: -200% 0; }
+    to   { background-position: 200% 0; }
+  }
+}

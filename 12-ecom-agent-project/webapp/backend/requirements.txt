@@ -1,0 +1,11 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.0
+boto3>=1.39.8
+httpx>=0.27
+# admin: the KB browser
+pinecone>=7.0
+openai>=1.40
+# tests
+pytest>=8.0
+moto[dynamodb]>=5.0
