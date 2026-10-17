@@ -6,7 +6,7 @@
     STEP 3  API keys       ecom-agents/openai, ecom-agents/pinecone  (from ingestion/.env; shared by all agents)
     STEP 4  network        Lambda SG · RDS admits it on 5432 · Secrets Manager endpoint in the VPC
     STEP 5  SQL Lambda     ecom-nlq-sql in the VPC: handler + sql_exec + the agent's guard.py + psycopg
-    STEP 6  Gateway        ecom-nlq-gateway (AWS_IAM / SigV4) -> target nlq-sql-tools
+    STEP 6  Gateway        ecom-nlq-gateway (AWS_IAM / SigV4) -> Lambda allows it -> target nlq-sql-tools
     STEP 7  runtime        image (linux/arm64) -> ECR -> AgentCore runtime ecom_nlq (A2A)
     STEP 8  deployment.json
 
@@ -21,6 +21,12 @@
 SAFE TO RE-RUN
     Every step looks before it creates. A re-run rebuilds the image and the
     Lambda code, and leaves everything else as it is.
+
+WAITS FOR IAM, INSTEAD OF FAILING
+    New roles and policies take up to a minute to reach AgentCore and Lambda.
+    The calls that use them wait (infra/iam_ready.py), printing
+    "waiting for IAM to allow …", rather than failing with a permission error
+    that a re-run would not have fixed either.
 
 WHAT THIS DOES NOT DO
     It does not create RDS (ingestion/postgres/deploy.py does) or Pinecone (the
@@ -137,8 +143,8 @@ def main() -> None:
     from infra import gateway
     print("\n=== STEP 6: Gateway ===")
     gw = gateway.create_gateway(iam.gateway_role(lambda_arn))
+    lambda_deploy.allow_gateway_invoke(gw["gatewayArn"])      # BEFORE the target: it is checked on creation
     gateway.create_lambda_target(gw["gatewayId"], lambda_arn)
-    lambda_deploy.allow_gateway_invoke(gw["gatewayArn"])
 
     from infra import runtime_deploy, runtime_iam
     print("\n=== STEP 7: runtime ===")
